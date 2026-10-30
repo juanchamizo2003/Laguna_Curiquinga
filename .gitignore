@@ -16,3 +16,15 @@ base_datos/*.db
 flujo_imagenes/descartes_historicos/*
 flujo_imagenes/fotos_procesadas/*
 flujo_imagenes/ingesta_camara/*
+flujo_imagenes/carga_manual/*
+
+# Latido y bitácora del vigilante
+base_datos/servicio/
+
+# Configuración local (claves de notificación, hash de contraseña) y respaldos
+base_datos/config.json
+base_datos/respaldos/
+flujo_imagenes/miniaturas/*
+
+# Copias reducidas de las fotos que sirve el carrusel del inicio
+frontend/static/visor/

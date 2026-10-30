@@ -1,7 +1,21 @@
-streamlit
-pandas
-opencv-python
-numpy
-watchdog
-torch
-torchvision
+# Interfaz
+streamlit==1.66.1
+plotly==7.1.0
+pandas==3.1.0
+
+# Procesamiento de imágenes e IA
+numpy==2.5.4
+opencv-python==5.0.0.93
+segment-anything==1.0
+# torch/torchvision: para GPU instalar la variante CUDA desde https://pytorch.org/get-started/locally/
+torch>=2.14
+torchvision>=0.29
+
+# Servicio de vigilancia de carpetas
+watchdog==6.0.0
+
+# Reporte PDF
+fpdf2==2.8.9
+
+# Pruebas
+pytest==9.2.0
