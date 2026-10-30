@@ -9,6 +9,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 
 from backend.data_base import DB_PATH, contar_alertas_no_leidas
 from backend.respaldo import crear_respaldo, listar_respaldos
+from frontend.components import recordar
 from frontend.components.datos import registros
 from backend.servicio import (
     leer_estado, leer_log, iniciar_vigilante, detener_vigilante, RUTA_LOG, EXTENSIONES_IMAGEN,
@@ -165,7 +166,8 @@ def _panel_estado():
                 <div class='card-sub'>Se actualiza cada 5 segundos</div>
             """, unsafe_allow_html=True)
         with c_fil, st.container(horizontal=True, horizontal_alignment="right", gap="small"):
-            filtro = st.segmented_control("Filtro del registro", ["Todo", "Avisos y errores"], default="Todo",
+            recordar.widget("srv_filtro_log", ["Todo", "Avisos y errores"])
+            filtro = st.segmented_control("Filtro del registro", ["Todo", "Avisos y errores"],
                                           key="srv_filtro_log", label_visibility="collapsed") or "Todo"
             if os.path.exists(RUTA_LOG):
                 with open(RUTA_LOG, "rb") as f:
@@ -200,7 +202,10 @@ def _panel_estado():
             )
 
         with st.container(key="srv_almacen_card"):
-            filas = [(nombre, f"{len(_imagenes(carpeta))} imágenes") for carpeta, nombre in CARPETAS.items()]
+            filas = []
+            for carpeta, nombre in CARPETAS.items():
+                n = len(_imagenes(carpeta))
+                filas.append((nombre, f"{n} {'imagen' if n == 1 else 'imágenes'}"))
             if os.path.exists(DB_PATH):
                 filas.append(("Base de datos", f"{len(registradas)} registros · {_tamano(os.path.getsize(DB_PATH))}"))
             filas.append(("Pesos SAM", _tamano(os.path.getsize(RUTA_MODELO)) if modelo_ok else "No encontrados"))

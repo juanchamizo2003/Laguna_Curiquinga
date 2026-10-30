@@ -108,7 +108,6 @@ Las tres entradas pasan por el mismo flujo (`backend/procesamiento.py`):
 
 - **Manual:** en *Cargar y procesar* se suben una o varias fotos (se guardan en `flujo_imagenes/carga_manual/`).
 - **Automático:** `vigilante.py` procesa cada foto que aparece en `flujo_imagenes/ingesta_camara/`. Si en *Configuración → Cámara* se indica una carpeta de origen (local o de red, por ejemplo donde el FTP de la cámara deja las fotos), el vigilante copia de ahí las nuevas cada pocos segundos. Al arrancar procesa también las que llegaron mientras estaba apagado.
-- **Reprocesar:** en *Cargar y procesar → Registros* se pueden volver a analizar los registros seleccionados, los que no tienen confianza o todos, por ejemplo tras recalibrar.
 
 La fecha y la hora de captura se toman del nombre del archivo, con el formato `Curiquinga_AAAAMMDD_HHMMSS*.jpg`.
 
@@ -137,7 +136,7 @@ python -m pytest
 
 Los puntos guía de SAM, las esquinas del plano usado para la homografía y los factores m²/píxel y m/píxel se editan en *Configuración → Calibración*. La vista previa los dibuja sobre cualquier foto y el botón *Probar segmentación* calcula el área con los valores nuevos antes de guardarlos.
 
-Si la cámara se mueve o cambia de resolución hay que recalibrar; si no, las áreas serán incorrectas aunque la segmentación se vea bien. Después de guardar una calibración nueva conviene reprocesar los registros para que todos usen los mismos valores.
+Si la cámara se mueve o cambia de resolución hay que recalibrar; si no, las áreas serán incorrectas aunque la segmentación se vea bien. La calibración nueva se aplica a las capturas siguientes: las ya guardadas conservan sus mediciones.
 
 ## Confianza
 

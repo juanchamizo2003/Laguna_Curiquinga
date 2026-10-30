@@ -155,6 +155,16 @@ def registros_con_alerta(tipo, registro_ids):
                              (tipo, *ids)).fetchall()
         return {f[0] for f in filas}
 
+def alertas_por_registro():
+    """{registro_id: [mensajes]} de las alertas ligadas a una captura (la gráfica las marca)."""
+    inicializar_bd()
+    with _conectar() as conn:
+        filas = conn.execute("SELECT registro_id, mensaje FROM alertas WHERE registro_id IS NOT NULL ORDER BY id").fetchall()
+    resultado = {}
+    for registro_id, mensaje in filas:
+        resultado.setdefault(registro_id, []).append(mensaje)
+    return resultado
+
 def contar_alertas_no_leidas():
     inicializar_bd()
     with _conectar() as conn:

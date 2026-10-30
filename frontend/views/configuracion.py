@@ -11,6 +11,7 @@ from backend.data_base import guardar_alerta, marcar_observacion
 from backend.alertas import notificar_alerta
 from backend.respaldo import crear_respaldo, listar_respaldos
 from backend.servicio import EXTENSIONES_IMAGEN
+from frontend.components import recordar
 from frontend.components.datos import registros
 from frontend.components.formato import formatear_m2, fecha_legible
 
@@ -82,8 +83,11 @@ def _tab_calibracion(config):
         m = c2.number_input("m por píxel (perímetro)", value=float(calib["m_por_px"]), format="%.4f", step=0.01, key="cfg_m")
 
         candidata = _calibracion_desde_editores(df_puntos, df_homografia, m2, m)
-        valida = any(p[2] == 1 for p in candidata["puntos_sam"])
-        if not valida:
+        escala_ok = m2 > 0 and m > 0
+        valida = escala_ok and any(p[2] == 1 for p in candidata["puntos_sam"])
+        if not escala_ok:
+            st.warning("Los valores por píxel deben ser mayores que 0.")
+        elif not valida:
             st.warning("Hace falta al menos un punto de tipo Agua.")
 
         with st.container(horizontal=True, gap="small"):
@@ -96,8 +100,7 @@ def _tab_calibracion(config):
                 for k in ("cfg_puntos", "cfg_homografia", "cfg_m2", "cfg_m", "cfg_prueba"):
                     st.session_state.pop(k, None)
                 _guardado("Calibración restablecida a los valores por defecto")
-        st.caption("Tras cambiar la calibración, reprocesa los registros desde Cargar y procesar → Registros "
-                   "para que todas las mediciones usen los mismos valores.")
+        st.caption("La calibración se aplica a las capturas nuevas: las ya guardadas conservan sus mediciones.")
 
     with col_vista, _tarjeta("cfg_vista_card", "Vista previa", "Verde: agua · rojo: no agua · recuadro: plano de referencia"):
         if not todos:
@@ -164,11 +167,14 @@ def _tab_calidad(config):
             atip_n = c7.number_input("Capturas cercanas mín.", 1, 50, int(q["atipico_vecinas"]),
                                      help="Con menos no se juzga: las cargas manuales espaciadas nunca son atípicas")
             if st.form_submit_button("Guardar umbrales", type="primary", icon=":material/save:"):
-                cfg.actualizar("calidad", {"brillo_min": brillo_min, "brillo_max": brillo_max, "contraste_min": contraste,
-                                           "nitidez_min": nitidez, "saturacion_agua_min": sat, "confianza_min": conf,
-                                           "atipico_pct": atip_pct, "atipico_ventana_h": atip_h,
-                                           "atipico_vecinas": atip_n})
-                _guardado("Umbrales de calidad guardados")
+                if brillo_min >= brillo_max:
+                    st.error("El brillo mínimo debe ser menor que el máximo: si no, se descartarían todas las fotos.")
+                else:
+                    cfg.actualizar("calidad", {"brillo_min": brillo_min, "brillo_max": brillo_max, "contraste_min": contraste,
+                                               "nitidez_min": nitidez, "saturacion_agua_min": sat, "confianza_min": conf,
+                                               "atipico_pct": atip_pct, "atipico_ventana_h": atip_h,
+                                               "atipico_vecinas": atip_n})
+                    _guardado("Umbrales de calidad guardados")
 
     with col_info, _tarjeta("cfg_calidad_aplicar_card", "Aplicar a lo ya registrado",
                             "Revisa el color del agua de todos los registros sin volver a pasar SAM"):
@@ -249,7 +255,9 @@ def _tab_alertas(config):
             alerta_id = guardar_alerta("prueba", "info", mensaje)
             with st.spinner("Enviando…"):
                 resultado = notificar_alerta(alerta_id, "info", mensaje)
-            (st.success if "error" not in resultado and "Sin canales" not in resultado else st.warning)(resultado)
+            if "error" in resultado or "Sin canales" in resultado:
+                st.session_state["config_icono"] = ":material/warning:"
+            _guardado(resultado)
 
 # ---------------------------------------------------------------- cámara y respaldos
 
@@ -350,12 +358,12 @@ def render_configuracion():
         <div class='header-sub'>Calibración del modelo, control de calidad, alertas, cámara, respaldos y acceso</div>
     """, unsafe_allow_html=True)
     if st.session_state.get("config_msg"):
-        st.toast(st.session_state.pop("config_msg"), icon=":material/check_circle:")
+        st.toast(st.session_state.pop("config_msg"), icon=st.session_state.pop("config_icono", ":material/check_circle:"))
 
     config = cfg.cargar()
-    tabs = st.tabs([":material/my_location: Calibración", ":material/high_quality: Calidad",
-                    ":material/notifications: Alertas", ":material/videocam: Cámara y respaldos",
-                    ":material/lock: Acceso y créditos"])
+    tabs = recordar.pestanas("config_tab", [":material/my_location: Calibración", ":material/high_quality: Calidad",
+                                                 ":material/notifications: Alertas", ":material/videocam: Cámara y respaldos",
+                                                 ":material/lock: Acceso y créditos"])
     with tabs[0]:
         _tab_calibracion(config)
     with tabs[1]:

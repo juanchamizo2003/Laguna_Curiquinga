@@ -9,10 +9,11 @@ COLOR_AUTO = "#3cc9b4"
 COLOR_MANUAL = "#f5a742"
 COLOR_TENDENCIA = "#8b95a3"
 COLOR_TEXTO_SUAVE = "#8b95a3"
+COLOR_ALERTA = "#f0616d"
 
 # (nombre en leyenda, texto a buscar en 'estado', color por defecto)
 SERIES_AREA = [
-    ("Servidor (automático)", "Automático", COLOR_AUTO),
+    ("Automático", "Automático", COLOR_AUTO),
     ("Manual", "Manual", COLOR_MANUAL),
 ]
 TIPOS_GRAFICO = ["Puntos", "Línea", "Área", "Barras", "Escalones", "Tallos"]
@@ -37,13 +38,17 @@ def _preparar(df):
     df["_x"] = np.arange(len(df))
     return df
 
-def _datos_tooltip(sub):
+def _datos_tooltip(sub, alertas=None):
+    """Columnas del tooltip propio; la última es el aviso de la alerta que disparó la captura ("" si ninguna)."""
     confianza = sub["confianza"] if "confianza" in sub else pd.Series(np.nan, index=sub.index)
+    alertas = alertas or {}
+    ids = sub["id"] if "id" in sub else pd.Series(None, index=sub.index)
     return np.stack([
         [fecha_legible(f) for f in sub["fecha_captura"]],
         [formatear_m2(a) for a in sub["area"]],
         [str(c or "#8b95a3").upper() for c in sub["color_hex"]],
         [_texto_confianza(c) for c in confianza],
+        [" · ".join(alertas.get(i, [])) for i in ids],
     ], axis=-1)
 
 def _eje_x_por_dias(fig, df, max_etiquetas=MAX_ETIQUETAS_X):
@@ -91,8 +96,8 @@ def estilo_base(fig, leyenda=True, hover="closest", ejes=True):
         xaxis=dict(eje, showgrid=False),
         yaxis=dict(eje, showgrid=True, griddash="dash", nticks=6),
         # Leyenda pegada al borde inferior de la figura (no relativa al alto): así queda siempre a la misma
-        # altura y el botón "Más gráficos" se alinea con ella
-        legend=dict(orientation="h", x=0.5, xanchor="center", yref="container", y=0, yanchor="bottom",
+        # altura y el botón "Más gráficos" se alinea con ella. A la izquierda: con varias series no lo pisa
+        legend=dict(orientation="h", x=0, xanchor="left", yref="container", y=0, yanchor="bottom",
                     font=dict(color=p["texto"], size=13), itemsizing="constant"),
         hoverlabel=dict(bgcolor="#151b22", bordercolor="#2b333d", font=dict(color="#e8edf2", size=12)),
         separators=",.", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -101,9 +106,28 @@ def estilo_base(fig, leyenda=True, hover="closest", ejes=True):
     )
     return fig
 
-def fig_area(df, tipo="Puntos", colores=None, tendencia=False, compacta=False):
-    """Área de cada captura por origen. colores: {'Automático': hex, 'Manual': hex}.
-    compacta: para las gráficas adicionales, más estrechas (menos fechas y sin leyenda)."""
+def _marcar_alertas(fig, df, umbral, alertas, color=COLOR_ALERTA):
+    """Línea discontinua en el área mínima de las alertas y un aro en las capturas que dispararon una
+    (rojo por defecto; el color se elige en los ajustes de la gráfica)."""
+    if umbral:
+        fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=umbral, y1=umbral, layer="below",
+                      line=dict(color=color, width=1.4, dash="dash"))
+        fig.add_annotation(xref="paper", x=1, y=umbral, xanchor="right", yanchor="bottom", showarrow=False,
+                           text=f"Mínimo de alerta · {formatear_m2(umbral)}",
+                           font=dict(color=_paleta_ejes()["texto"], size=11))
+    if alertas and "id" in df:
+        con = df[df["id"].isin(list(alertas))]
+        if not con.empty:
+            fig.add_trace(go.Scatter(
+                x=con["_x"], y=con["area"], mode="markers", name="Con alerta", hoverinfo="skip",
+                marker=dict(size=19, color="rgba(0,0,0,0)", line=dict(color=color, width=2)),
+            ))
+
+def fig_area(df, tipo="Puntos", colores=None, tendencia=False, compacta=False, umbral=None, alertas=None):
+    """Área de cada captura por origen. colores: {'Automático': hex, 'Manual': hex} y, opcionales,
+    'Tendencia' y 'Alerta' para esas dos capas.
+    compacta: para las gráficas adicionales, más estrechas (menos fechas y sin leyenda).
+    umbral: área mínima de las alertas (línea roja); alertas: {id de captura: [mensajes]} de las que dispararon una."""
     colores = colores or {}
     fig = go.Figure()
     if df.empty:
@@ -116,7 +140,7 @@ def fig_area(df, tipo="Puntos", colores=None, tendencia=False, compacta=False):
         if sub.empty:
             continue
         color = colores.get(clave, color_def)
-        comunes = dict(x=sub["_x"], y=sub["area"], name=nombre, customdata=_datos_tooltip(sub),
+        comunes = dict(x=sub["_x"], y=sub["area"], name=nombre, customdata=_datos_tooltip(sub, alertas),
                        hoverinfo="none", meta=TOOLTIP)
         if tipo in ("Barras", "Tallos"):
             # Tallos: barra fina con un punto en la punta
@@ -141,13 +165,16 @@ def fig_area(df, tipo="Puntos", colores=None, tendencia=False, compacta=False):
         fig.add_trace(go.Scatter(
             x=dias["x"], y=dias["area"].rolling(VENTANA_TENDENCIA, min_periods=2).mean(),
             name=f"Tendencia ({VENTANA_TENDENCIA} días)", mode="lines",
-            line=dict(color=COLOR_TENDENCIA, width=1.6, dash="dot", shape="spline"), hoverinfo="skip",
+            line=dict(color=colores.get("Tendencia", COLOR_TENDENCIA), width=1.6, dash="dot", shape="spline"),
+            hoverinfo="skip",
         ))
 
+    _marcar_alertas(fig, df, umbral, alertas, colores.get("Alerta", COLOR_ALERTA))
     _eje_x_por_dias(fig, df, 4 if compacta else MAX_ETIQUETAS_X)
     estilo_base(fig, leyenda=not compacta)
     fig.update_xaxes(tickangle=0)
     # El eje Y arranca exactamente en 0: así la línea del eje X queda sobre el cero, como en un plano cartesiano
-    fig.update_yaxes(range=[0, float(df["area"].max()) * 1.12], autorange=False, tickformat="~s")
+    tope = max(float(df["area"].max()), float(umbral or 0))
+    fig.update_yaxes(range=[0, tope * 1.12], autorange=False, tickformat="~s")
     fig.update_layout(barmode="overlay" if tipo == "Tallos" else "group", bargap=0.25)
     return fig

@@ -32,16 +32,10 @@ def html_kpi(icono, etiqueta, valor, extra="", tono="", pie="", ayuda=""):
     """HTML de una tarjeta de métrica. tono: '' (acento), 'ok', 'warn' o 'danger' para el color del icono.
     pie: línea pequeña bajo el valor (p. ej. el periodo de una estadística); ayuda: texto al pasar el ratón."""
     titulo = f' title="{ayuda}"' if ayuda else ""
-    return f"""
-        <div class="kpi-card"{titulo}>
-            <div class="kpi-icon {tono}">{icono}</div>
-            <div>
-                <div class="kpi-label">{etiqueta}</div>
-                <div class="kpi-value">{valor}{extra}</div>
-                {pie}
-            </div>
-        </div>
-    """
+    # En una sola línea: con la sangría (y la línea vacía de un pie sin texto) Markdown tomaría el final por
+    # un bloque de código y mostraría "</div>" en la tarjeta
+    return (f'<div class="kpi-card"{titulo}><div class="kpi-icon {tono}">{icono}</div><div>'
+            f'<div class="kpi-label">{etiqueta}</div><div class="kpi-value">{valor}{extra}</div>{pie}</div></div>')
 
 def tarjeta_kpi(icono, etiqueta, valor, extra="", tono=""):
     st.markdown(html_kpi(icono, etiqueta, valor, extra, tono), unsafe_allow_html=True)
