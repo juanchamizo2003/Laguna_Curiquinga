@@ -1,5 +1,6 @@
 import os
 import gc
+import threading
 import cv2
 import numpy as np
 import torch
@@ -12,6 +13,21 @@ RUTA_MODELO_SAM = os.path.join(MODELOS_DIR, "sam_vit_b_01ec64.pth")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 _predictor = None
+_cancelar = threading.Event()
+
+class AnalisisCancelado(Exception):
+    pass
+
+def cancelar_analisis():
+    """Interrumpe el análisis en curso de este proceso: SAM se detiene al pasar a su siguiente capa (1-2 s)."""
+    _cancelar.set()
+
+def permitir_analisis():
+    _cancelar.clear()
+
+def _revisar_cancelacion(_modulo, _entrada):
+    if _cancelar.is_set():
+        raise AnalisisCancelado("Análisis cancelado")
 
 def get_predictor():
     global _predictor
@@ -20,8 +36,20 @@ def get_predictor():
             raise FileNotFoundError(f"No se encontró el archivo de pesos SAM en: {RUTA_MODELO_SAM}")
         from segment_anything import sam_model_registry, SamPredictor
         sam = sam_model_registry["vit_b"](checkpoint=RUTA_MODELO_SAM).to(device=DEVICE)
+        # La parte lenta es el codificador de imagen: entre capa y capa se mira si pidieron cancelar
+        for bloque in sam.image_encoder.blocks:
+            bloque.register_forward_pre_hook(_revisar_cancelacion)
         _predictor = SamPredictor(sam)
     return _predictor
+
+def liberar_modelo():
+    """Suelta el modelo de la memoria. Pesa bastante: el panel solo lo necesita mientras analiza un lote."""
+    global _predictor
+    _predictor = None
+    _cancelar.clear()  # una cancelación ya atendida no debe afectar a un análisis posterior
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 def redimensionar_para_ia(img, max_dim=1024):
     h, w = img.shape[:2]

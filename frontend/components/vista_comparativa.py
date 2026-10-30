@@ -1,56 +1,54 @@
-import html
 import streamlit as st
 
-from backend.calidad import estado_validacion
-from backend.miniaturas import ruta_miniatura
-from frontend.components.datos import registros, color_estado
-from frontend.components.formato import formatear_m2, fecha_legible
-from frontend.components.formulario_carga import render_metricas_captura, render_par_imagenes
-from frontend.components.tarjetas import punto
-from frontend.components.visor_laguna import render_revision
+from frontend.components.datos import registros
+from frontend.components.formulario_carga import pedir_resultados
+from frontend.components.formato import fecha_legible
+from frontend.components.visor_laguna import filtrar_por_dia, foto_cuadricula, selector_dia
 
 COLUMNAS_GALERIA = 4
-POR_PAGINA = 12
+POR_PAGINA = 8  # 2 filas de 4: caben sin desplazarse
+
+def _ir_pagina(pagina):
+    st.session_state.visual_pag = pagina
+
+def _poner_dia(dia):
+    st.session_state.visual_dia_v = dia
+    st.session_state.visual_pag = 0
 
 def render_vista_comparativa():
-    todos = registros()
-    if not todos:
-        st.info("Aún no hay capturas procesadas para mostrar.")
-        return
-
-    ultimo = max(todos, key=lambda r: r["fecha_captura"])
-    with st.container(key="visual_ultimo_card"):
-        st.markdown(f"""
-            <div class='card-title'>Captura más reciente</div>
-            <div class='card-sub card-sub-ellipsis'>{html.escape(ultimo['nombre_foto'])} · perímetro {ultimo['perimetro']} m</div>
-        """, unsafe_allow_html=True)
-        render_metricas_captura(ultimo)
-        render_revision(ultimo, "visual_ultimo")
-        render_par_imagenes(ultimo)
-
-    # Galería: la más reciente primero, paginada y con miniaturas para no cargar cientos de fotos completas
-    ordenados = sorted(todos, key=lambda r: r["fecha_captura"], reverse=True)
+    # Galería independiente del Inicio: todas las capturas (automáticas y manuales), la más reciente primero, por
+    # páginas que caben en la pantalla y con filtro por día; al pulsar una foto se abre en grande
+    todos = sorted(registros(), key=lambda r: r["fecha_captura"], reverse=True)
     with st.container(key="visual_galeria_card"):
+        if not todos:
+            st.markdown("<div class='graf-vacio'><b>Todavía no hay fotos</b>"
+                        "<span>Aquí aparecerán las capturas procesadas.</span></div>", unsafe_allow_html=True)
+            return
+        ordenados, por_dia, dia = filtrar_por_dia(todos, st.session_state.get("visual_dia_v"))
         paginas = max(1, -(-len(ordenados) // POR_PAGINA))
-        c_tit, c_pag = st.columns([3, 1], vertical_alignment="center")
-        with c_tit:
+        pagina = min(st.session_state.get("visual_pag", 0), paginas - 1)
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             st.markdown(f"""
                 <div class='card-title'>Galería de segmentaciones</div>
-                <div class='card-sub'>{len(ordenados)} capturas · el punto indica su estado de validación</div>
-            """, unsafe_allow_html=True)
-        pagina = 1
-        if paginas > 1:
-            with c_pag:
-                pagina = st.number_input("Página", 1, paginas, 1, key="galeria_pagina", label_visibility="collapsed")
+                <div class='card-sub'>{fecha_legible(dia, con_hora=False) + " · " if dia else ""}{len(ordenados)} captura(s) · pulsa una foto para verla en grande</div>
+            """, unsafe_allow_html=True, width="content")
+            st.space("stretch")
+            if len(por_dia) > 1:
+                selector_dia(por_dia, dia, len(todos), "visual_dia_mes", _poner_dia)
+            if paginas > 1:
+                with st.container(horizontal=True, vertical_alignment="center", gap=None, key="galeria_pager",
+                                  width="content"):
+                    st.button("", icon=":material/chevron_left:", key="visual_pag_ant", disabled=pagina == 0,
+                              on_click=_ir_pagina, args=(pagina - 1,), type="tertiary", help="Página anterior")
+                    st.markdown(f"<p class='gal-pag'>{pagina + 1} / {paginas}</p>", unsafe_allow_html=True, width="content")
+                    st.button("", icon=":material/chevron_right:", key="visual_pag_sig", disabled=pagina == paginas - 1,
+                              on_click=_ir_pagina, args=(pagina + 1,), type="tertiary", help="Página siguiente")
 
-        visibles = ordenados[(pagina - 1) * POR_PAGINA: pagina * POR_PAGINA]
-        cols = st.columns(COLUMNAS_GALERIA, gap="small")
-        for i, r in enumerate(visibles):
-            estado = estado_validacion(r)
-            with cols[i % COLUMNAS_GALERIA]:
-                st.image(ruta_miniatura(r), width="stretch")
-                st.markdown(
-                    f"<div class='galeria-pie' title='{estado}'>{punto(color_estado(estado))} <b>{formatear_m2(r['area'])}</b> · "
-                    f"{fecha_legible(r['fecha_captura'], con_hora=False)} · #{r['id']}</div>",
-                    unsafe_allow_html=True,
-                )
+        ids = [r["id"] for r in ordenados]
+        inicio = pagina * POR_PAGINA
+        visibles = ordenados[inicio:inicio + POR_PAGINA]
+        for fila in range(0, len(visibles), COLUMNAS_GALERIA):
+            filas = enumerate(visibles[fila:fila + COLUMNAS_GALERIA], start=inicio + fila)
+            for col, (i, r) in zip(st.columns(COLUMNAS_GALERIA, gap="small"), filas):
+                with col:
+                    foto_cuadricula(r, i, pedir_resultados, (ids, i, False))

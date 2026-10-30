@@ -1,11 +1,15 @@
 import html
+from datetime import datetime
+
 import streamlit as st
 
+from frontend.components import recordar
 from frontend.components.datos import df_registros, solo_confiables
 from frontend.components.filtro_temporal import (render_filtro_compacto, aplicar_filtro_temporal, en_vivo,
                                                  restablecer_filtro, SEGUNDOS_EN_VIVO)
-from frontend.components.visor_laguna import render_visor_laguna, boton_tema, N_CARRUSEL
+from frontend.components.visor_laguna import render_visor_laguna, N_CARRUSEL
 from backend import config as cfg
+from backend.data_base import alertas_por_registro
 from frontend.components.graficos_dashboard import fig_area, TIPOS_GRAFICO
 from frontend.components.tooltip_grafica import activar_tooltip
 from frontend.components.ordenar_graficas import nuevo_orden, asa
@@ -18,7 +22,8 @@ SIN_DATO = "<span class='kpi-unidad'>—</span>"
 VENTANA_AMPLIADA = 30   # capturas visibles al abrir la gráfica ampliada; el resto se recorre arrastrando
 # Clave del widget -> clave en la sección "grafica" de config.json (las preferencias sobreviven a la recarga)
 PREFERENCIAS = {"graf_tipo": "tipo", "graf_color_auto": "color_auto", "graf_color_manual": "color_manual",
-                "graf_tendencia": "tendencia"}
+                "graf_tendencia": "tendencia", "graf_alertas": "alertas",
+                "graf_color_tendencia": "color_tendencia", "graf_color_alertas": "color_alertas"}
 
 def _html_area(df_kpi):
     """Área de la captura anterior y de la actual; la actual en verde si subió y en rojo si bajó."""
@@ -35,6 +40,52 @@ def _html_area(df_kpi):
         <div class="{tono}"><b>{valor(actual)}</b><small>Actual</small></div>
     </div>"""
 
+def _plural(n, uno, varios):
+    return f"{n} {uno if n == 1 else varios}"
+
+def _frescura(fecha_texto, ahora=None):
+    """Antigüedad de la última captura ('hace 5 min') y su nivel: verde dentro del plazo de la alerta
+    "sin capturas" (Configuración → Alertas), ámbar hasta cuatro veces ese plazo y rojo después."""
+    try:
+        fecha = datetime.fromisoformat(str(fecha_texto))
+    except ValueError:
+        return "", ""
+    segundos = max(0, ((ahora or datetime.now()) - fecha).total_seconds())
+    minutos, horas, dias = int(segundos // 60), int(segundos // 3600), int(segundos // 86400)
+    if minutos < 1:
+        texto = "ahora mismo"
+    elif horas < 1:
+        texto = f"hace {minutos} min"
+    elif dias < 1:
+        texto = f"hace {horas} h"
+    elif dias < 30:
+        texto = "hace " + _plural(dias, "día", "días")
+    elif dias < 365:
+        texto = "hace " + _plural(dias // 30, "mes", "meses")
+    else:
+        texto = "hace " + _plural(dias // 365, "año", "años")
+    plazo = cfg.cargar()["alertas"]["horas_sin_fotos"]
+    nivel = "" if segundos < plazo * 3600 else ("aviso" if segundos < plazo * 4 * 3600 else "alerta")
+    return texto, nivel
+
+def _html_comparacion(actual, promedio):
+    """Etiqueta "▲ 8 %": cuánto se aparta la última captura del promedio del periodo."""
+    dif = (actual - promedio) / promedio * 100 if promedio else 0
+    ayuda = (f"La última captura ({formatear_m2(actual)}) está {abs(dif):.1f} % "
+             f"{'por encima' if dif > 0 else 'por debajo'} del promedio del periodo")
+    if abs(dif) < 0.5:
+        return "<span class='kpi-delta' title='La última captura está en el promedio del periodo'>= prom.</span>"
+    tono, flecha = ("up", "▲") if dif > 0 else ("down", "▼")
+    return f"<span class='kpi-delta {tono}' title='{ayuda}'>{flecha} {abs(dif):.0f} % actual</span>"
+
+def _marcas_alerta(pref):
+    """Línea del área mínima y capturas con alerta para las gráficas. Solo si se activó en los ajustes de la
+    gráfica ("Alertas en la gráfica") y las alertas están encendidas en Configuración."""
+    reglas = cfg.cargar()["alertas"]
+    if not (pref.get("alertas") and reglas["activas"]):
+        return {}
+    return {"umbral": reglas["area_min"], "alertas": alertas_por_registro()}
+
 def _extremos(df):
     """(fila del mínimo, fila del máximo) del área."""
     return df.loc[df["area"].idxmin()], df.loc[df["area"].idxmax()]
@@ -42,10 +93,13 @@ def _extremos(df):
 def _html_rango(df):
     """Mínimo ↔ máximo del área en el periodo, con el mismo formato que la tarjeta de Área."""
     minimo, maximo = _extremos(df)
+    # En una tarjeta estrecha la unidad pasa de cada número al título de la tarjeta (el CSS elige cuál se ve)
+    def valor(r):
+        return formatear_m2(r["area"]).removesuffix(" m²") + "<span class='u-num'> m²</span>"
     return f"""<div class="kpi-par kpi-rango">
-        <div><b>{formatear_m2(minimo["area"])}</b><small>Mínimo</small></div>
+        <div><b>{valor(minimo)}</b><small>Mínimo</small></div>
         <span class="kpi-flecha">↔</span>
-        <div><b>{formatear_m2(maximo["area"])}</b><small>Máximo</small></div>
+        <div><b>{valor(maximo)}</b><small>Máximo</small></div>
     </div>"""
 
 def _ayuda_rango(df, del_periodo):
@@ -66,7 +120,14 @@ def _render_kpis(df_kpi, df_periodo, df_grafica, periodo):
         fecha = color_html = SIN_DATO
         hora = ""
 
-    ahora = "<span class='kpi-ahora'><i></i>ahora</span>"
+    # Antigüedad de la última captura: si la cámara deja de enviar, pasa de verde a ámbar y a rojo
+    ahora = ""
+    if ultima is not None:
+        texto, nivel = _frescura(ultima["fecha_captura"])
+        plazo = cfg.cargar()["alertas"]["horas_sin_fotos"]
+        ayuda = (f"Última captura {texto}. Se pone ámbar tras {plazo} h sin capturas nuevas y roja tras "
+                 f"{plazo * 4} h (plazo de Configuración → Alertas)")
+        ahora = f"<span class='kpi-ahora {nivel}' title='{ayuda}'><i></i>{texto}</span>"
     # En las tarjetas estrechas "ahora" va bajo el valor (en el título partía la línea); en Fecha, junto a la hora
     pie_ahora = f"<div class='kpi-periodo'>{ahora}</div>"
     pie_hora = f"<div class='kpi-periodo'><span class='kpi-hora-pie'>{hora}</span>{ahora}</div>"
@@ -75,7 +136,8 @@ def _render_kpis(df_kpi, df_periodo, df_grafica, periodo):
     pie = f"<div class='kpi-periodo {'vivo' if vivo else 'filtro'}'>{html.escape(texto_periodo)}</div>"
     hay = not df_grafica.empty
     excluidas = len(df_periodo) - len(df_grafica)
-    extra = (f"<span class='kpi-delta down' title='Rechazadas, no aptas o atípicas: no cuentan'>{excluidas} excluidas</span>"
+    extra = (f"<span class='kpi-delta down' title='Rechazadas, no aptas o atípicas: no cuentan'>"
+             f"{excluidas} {'excluida' if excluidas == 1 else 'excluidas'}</span>"
              if excluidas else "")
     del_periodo = "en el periodo que muestra la gráfica (cambia con el filtro)"
     tarjetas = [
@@ -85,8 +147,10 @@ def _render_kpis(df_kpi, df_periodo, df_grafica, periodo):
         html_kpi(ICONO_COLOR, "Color del agua", color_html, pie=pie_ahora,
                  ayuda="Color medio del agua en la última captura."),
         html_kpi(ICONO_PROMEDIO, "Promedio", formatear_m2(df_grafica["area"].mean()) if hay else SIN_DATO,
-                 pie=pie, ayuda=f"Promedio del área {del_periodo}."),
-        html_kpi(ICONO_MAXIMO, "Rango del área", _html_rango(df_grafica) if hay else SIN_DATO,
+                 _html_comparacion(ultima["area"], df_grafica["area"].mean()) if hay and ultima is not None else "",
+                 pie=pie, ayuda=f"Promedio del área {del_periodo}. La etiqueta compara con él la última captura."),
+        html_kpi(ICONO_MAXIMO, "Rango del área<span class='u-etq'> (m²)</span>",
+                 _html_rango(df_grafica) if hay else SIN_DATO,
                  pie=pie, ayuda=_ayuda_rango(df_grafica, del_periodo) if hay else ""),
         html_kpi(ICONO_MUESTRAS, "Muestras", str(len(df_grafica)), extra,
                  pie=pie, ayuda=f"Capturas confiables {del_periodo}."),
@@ -101,36 +165,50 @@ def _preferencias():
     pref = dict(cfg.cargar()["grafica"])
     if pref["tipo"] not in TIPOS_GRAFICO:
         pref["tipo"] = "Puntos"
-    pref["colores"] = {"Automático": pref["color_auto"], "Manual": pref["color_manual"]}
+    pref["colores"] = {"Automático": pref["color_auto"], "Manual": pref["color_manual"],
+                       "Tendencia": pref["color_tendencia"], "Alerta": pref["color_alertas"]}
     return pref
 
 def _guardar_preferencia(*claves):
     """Guarda en config.json los ajustes indicados (los demás no se tocan)."""
     cfg.actualizar("grafica", {PREFERENCIAS[c]: st.session_state.get(c) for c in claves})
 
-def _popover_ajustes(pref, con_tipo=True):
+def _popover_ajustes(pref, modo, con_tipo=True):
     """Ajustes de la gráfica. El tipo y la tendencia se aplican al elegirlos; cada color, al cerrar su selector
-    (el botón "Confirmar" que añade el script de app.py solo lo cierra de forma evidente)."""
+    (el botón "Confirmar" que añade el script de app.py solo lo cierra de forma evidente).
+    Solo se ofrecen los colores de las series que se ven: con "Manual" no tiene sentido el del servidor."""
     with st.popover("", icon=":material/tune:", help="Tipo de gráfico y colores" if con_tipo else "Colores de las gráficas"):
         if con_tipo:
             st.markdown("**Tipo de gráfico**")
             st.pills("Tipo de gráfico", TIPOS_GRAFICO, default=pref["tipo"], key="graf_tipo",
                      label_visibility="collapsed", on_change=_guardar_preferencia, args=("graf_tipo",))
         # El color se aplica al cerrar el selector (con "Confirmar" o pulsando fuera): Streamlit lo envía entonces
-        st.markdown("**Colores por origen**")
-        c1, c2 = st.columns(2)
-        c1.color_picker("Servidor", pref["color_auto"], key="graf_color_auto",
-                        on_change=_guardar_preferencia, args=("graf_color_auto",))
-        c2.color_picker("Manual", pref["color_manual"], key="graf_color_manual",
-                        on_change=_guardar_preferencia, args=("graf_color_manual",))
-        st.toggle("Línea de tendencia", pref["tendencia"], key="graf_tendencia",
-                  on_change=_guardar_preferencia, args=("graf_tendencia",))
+        series = [(etiqueta, clave) for origen, etiqueta, clave in (("Automático", "Servidor", "graf_color_auto"),
+                                                                    ("Manual", "Manual", "graf_color_manual"))
+                  if modo in ("Ambos", origen)]
+        st.markdown("**Colores por origen**" if len(series) > 1 else "**Color de la serie**")
+        for col, (etiqueta, clave) in zip(st.columns(2), series):
+            col.color_picker(etiqueta, pref[PREFERENCIAS[clave]], key=clave,
+                             on_change=_guardar_preferencia, args=(clave,))
+        # Cada opción con su color al lado; el color solo se puede cambiar con la opción activada
+        for etiqueta, clave, clave_color, ayuda in (
+                ("Línea de tendencia", "graf_tendencia", "graf_color_tendencia", None),
+                ("Alertas en la gráfica", "graf_alertas", "graf_color_alertas",
+                 "Línea en el área mínima de las alertas y un aro en las capturas que dispararon una")):
+            activa = pref[PREFERENCIAS[clave]]
+            with st.container(horizontal=True, vertical_alignment="center", gap="small", key=f"{clave}_fila"):
+                st.toggle(etiqueta, activa, key=clave, on_change=_guardar_preferencia, args=(clave,), help=ayuda)
+                st.space("stretch")
+                st.color_picker(f"Color de {etiqueta.lower()}", pref[PREFERENCIAS[clave_color]], key=clave_color,
+                                disabled=not activa, label_visibility="collapsed",
+                                help=None if activa else "Activa la opción para cambiar su color",
+                                on_change=_guardar_preferencia, args=(clave_color,))
         # "Listo" cierra el menú (lo atiende el script de app.py: Streamlit no puede cerrar un popover desde Python)
         st.html('<button class="pop-listo" type="button">Listo</button>')
 
-def _opciones_grafica(pref):
+def _opciones_grafica(pref, modo):
     """Botones del encabezado de la gráfica: ajustes y ampliar."""
-    _popover_ajustes(pref)
+    _popover_ajustes(pref, modo)
     # Ampliar se abre fuera del fragmento en vivo (si no, el refresco cada 30 s cerraría la ventana)
     if st.button("", icon=":material/open_in_full:", key="btn_ampliar_grafica",
                  help="Ampliar la gráfica y ver sus datos con los filtros actuales",
@@ -156,10 +234,12 @@ def _grafica_ampliada(modo, tipo=None):
     df = solo_confiables(df_periodo)
     pref = _preferencias()
     tipo = tipo or pref["tipo"]
-    st.markdown(f"<div class='card-sub'><b>{tipo}</b> · <span class='filtro-badge'>{subtitulo}</span> "
+    # Etiqueta verde en vivo y amarilla con un filtro aplicado, como en el resto del panel
+    badge = "filtro-badge vivo" if en_vivo() else "filtro-badge"
+    st.markdown(f"<div class='card-sub'><b>{tipo}</b> · <span class='{badge}'>{html.escape(subtitulo)}</span> "
                 f"{len(df)} captura(s) confiable(s) · origen: {modo} · rueda del ratón: zoom · arrastrar: moverse · "
                 f"doble clic: ver todo</div>", unsafe_allow_html=True)
-    fig = fig_area(df, tipo, pref["colores"], pref["tendencia"])
+    fig = fig_area(df, tipo, pref["colores"], pref["tendencia"], **_marcas_alerta(pref))
     if not df.empty:
         fig.update_layout(dragmode="pan",
                           modebar=dict(bgcolor="rgba(0,0,0,0)", color="#8b95a3", activecolor="#3cc9b4"))
@@ -168,7 +248,7 @@ def _grafica_ampliada(modo, tipo=None):
             fig.update_xaxes(range=[len(df) - VENTANA_AMPLIADA - 0.6, len(df) - 0.4])
     with st.container(key="amp_grafica"):
         st.plotly_chart(fig, width="stretch", height="stretch", key="grafica_ampliada_fig",
-                        config={"scrollZoom": True, "displaylogo": False, "displayModeBar": True,
+                        config={"scrollZoom": True, "displaylogo": False, "displayModeBar": not df.empty,
                                 "modeBarButtonsToRemove": ["zoom2d", "select2d", "lasso2d", "autoScale2d", "toImage"]})
 
 def _mostrar_vista_graficas(visible):
@@ -217,17 +297,18 @@ def render_vista_graficas(modo, key_prefix, vivo=False):
         titulo = c_tit.empty()
         with c_vol, st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center",
                                  gap="small", key=f"{key_prefix}_gm_acciones"):
-            _popover_ajustes(pref, con_tipo=False)
-            if st.button("Volver al panel", icon=":material/arrow_back:", key="btn_volver_panel",
+            _popover_ajustes(pref, modo, con_tipo=False)
+            if st.button("", icon=":material/arrow_back:", key="btn_volver_panel", help="Volver al panel",
                          on_click=_mostrar_vista_graficas, args=(False,)):
                 st.rerun()
         render_filtro_compacto(df_datos, key_prefix=f"{key_prefix}_gm")
         _seguir_en_vivo(vivo)
         df_periodo, subtitulo = aplicar_filtro_temporal(df_datos)
         df_grafica = solo_confiables(df_periodo)
+        aviso = "" if en_vivo() else "<span class='filtro-badge'>Filtro activo</span> "
         titulo.markdown(f"""
-            <div class='card-title'>Otros tipos de gráfico</div>
-            <div class='card-sub card-sub-ellipsis'>Mismos datos de la gráfica principal · {subtitulo} · {len(df_grafica)} captura(s) · arrastra ≡ para ordenar</div>
+            <div class='card-title'>Mismos datos de la gráfica principal</div>
+            <div class='card-sub card-sub-ellipsis'>{aviso}{subtitulo} · {len(df_grafica)} captura(s) · arrastra ≡ para ordenar</div>
         """, unsafe_allow_html=True)
 
     for i in range(0, len(orden), 2):
@@ -241,7 +322,8 @@ def render_vista_graficas(modo, key_prefix, vivo=False):
                                  on_click=st.session_state.__setitem__, args=("grafica_ampliada", tipo)):
                         st.rerun()
                     st.markdown(asa(tipo), unsafe_allow_html=True, width="content")
-                st.plotly_chart(fig_area(df_grafica, tipo, pref["colores"], pref["tendencia"], compacta=True), width="stretch",
+                st.plotly_chart(fig_area(df_grafica, tipo, pref["colores"], pref["tendencia"], compacta=True,
+                                         **_marcas_alerta(pref)), width="stretch",
                                 height=300, key=f"{key_prefix}_gm_chart_{tipo}", config={"displayModeBar": False})
 
 def _columna_principal(modo, key_prefix, vivo=False):
@@ -257,7 +339,7 @@ def _columna_principal(modo, key_prefix, vivo=False):
         titulo = c_tit.empty()
         with c_opc, st.container(horizontal=True, horizontal_alignment="right", gap="small",
                                  key=f"{key_prefix}_graf_opciones"):
-            _opciones_grafica(pref)
+            _opciones_grafica(pref, modo)
         render_filtro_compacto(df_datos, key_prefix=key_prefix)
         _seguir_en_vivo(vivo)
         df_periodo, subtitulo = aplicar_filtro_temporal(df_datos)
@@ -269,7 +351,13 @@ def _columna_principal(modo, key_prefix, vivo=False):
             <div class='card-sub card-sub-ellipsis'>{aviso}Mediciones confiables · {subtitulo} · {len(df_grafica)} captura(s)</div>
         """, unsafe_allow_html=True)
 
-        if df_grafica.empty and not en_vivo():
+        if df_kpi.empty:
+            # El origen no tiene ni una captura confiable: no es culpa del filtro, así que no se sugiere cambiarlo
+            with st.container(key="graf_vacio", horizontal_alignment="center", vertical_alignment="center"):
+                st.markdown("<div class='graf-vacio'><b>Todavía no hay capturas de este origen</b>"
+                            "<span>Aparecerán aquí en cuanto se procese la primera foto.</span></div>",
+                            unsafe_allow_html=True)
+        elif df_grafica.empty and not en_vivo():
             # El filtro no deja capturas: se dice claramente y se ofrece salir de él con un clic
             with st.container(key="graf_vacio", horizontal_alignment="center", vertical_alignment="center"):
                 st.markdown("<div class='graf-vacio'><b>No hay capturas en el periodo elegido</b>"
@@ -278,7 +366,7 @@ def _columna_principal(modo, key_prefix, vivo=False):
                 st.button("Volver a En vivo", icon=":material/sensors:", key=f"{key_prefix}_volver_vivo",
                           type="primary", on_click=restablecer_filtro)
         else:
-            fig = fig_area(df_grafica, pref["tipo"], pref["colores"], pref["tendencia"])
+            fig = fig_area(df_grafica, pref["tipo"], pref["colores"], pref["tendencia"], **_marcas_alerta(pref))
             st.plotly_chart(fig, width="stretch", height="stretch", key=f"{key_prefix}_chart_pano",
                             config={"displayModeBar": False})
             _boton_otros_tipos()
@@ -318,15 +406,33 @@ def _exportar(df_datos, nombre):
 
 def render_inicio():
     df_completo = df_registros()
+    ss = st.session_state
+    # ?vista=graficas en la dirección: recargar mantiene la subpestaña y el botón atrás del navegador sale de ella
+    if "vista_graficas" not in ss and st.query_params.get("vista") == "graficas":
+        ss["vista_graficas"] = True
+    graficas = ss.get("vista_graficas", False)
+    if graficas and st.query_params.get("vista") != "graficas":
+        st.query_params["vista"] = "graficas"
+    elif not graficas and "vista" in st.query_params:
+        del st.query_params["vista"]
 
-    # ENCABEZADO: título a la izquierda; origen, exportar y tema claro/oscuro a la derecha
-    col_tit, col_acc = st.columns([1, 2.8], vertical_alignment="center")
+    # ENCABEZADO: título (o la ruta "Panel de monitoreo › Más gráficos") a la izquierda; origen y exportar a la derecha
+    col_tit, col_acc = st.columns([1.6, 2.8] if graficas else [1, 2.8], vertical_alignment="center")
     with col_tit:
-        st.markdown("<div class='header-title'>Panel de monitoreo</div>", unsafe_allow_html=True)
+        if graficas:
+            # El menú Inicio de la barra lateral y el botón atrás del navegador pulsan este mismo enlace (app.py)
+            with st.container(horizontal=True, vertical_alignment="center", gap=None, key="miga"):
+                st.button("Panel de monitoreo", key="miga_panel", type="tertiary", help="Volver al panel",
+                          on_click=_mostrar_vista_graficas, args=(False,))
+                st.markdown("<div class='header-title miga-actual'><span>›</span>Más gráficos</div>",
+                            unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='header-title'>Panel de monitoreo</div>", unsafe_allow_html=True)
 
     with col_acc, st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center", gap="small"):
+        recordar.widget("inicio_modo", list(MODOS))
         modo = st.segmented_control(
-            "Origen de los datos", list(MODOS), default="Ambos",
+            "Origen de los datos", list(MODOS),
             key="inicio_modo", label_visibility="collapsed"
         ) or "Ambos"
 
@@ -339,17 +445,17 @@ def render_inicio():
         registros_visor = df_kpi.iloc[::-1].head(N_CARRUSEL).to_dict('records') if not df_kpi.empty else []
 
         _exportar(df_datos, MODOS[modo])
-        boton_tema()
 
-    if st.session_state.get("vista_graficas"):
+    if graficas:
         _en_fragmento(render_vista_graficas, modo, key_prefix)
     else:
-        # La galería sigue al filtro de la gráfica: en vivo, todo el historial; con filtro, solo ese periodo
-        periodo = None
-        fotos = df_datos
+        # La galería sigue al filtro de la gráfica: en vivo, las mismas 10 del carrusel; con filtro, ese periodo
+        periodo, todas = None, registros_visor
         if not en_vivo():
             fotos, periodo = aplicar_filtro_temporal(df_datos)
-        todas = fotos.iloc[::-1].to_dict("records") if not fotos.empty else []
+            # Solo las confiables, como el carrusel y la gráfica: así el número del botón coincide con ellos
+            fotos = solo_confiables(fotos)
+            todas = fotos.iloc[::-1].to_dict("records") if not fotos.empty else []
         render_dashboard_layout(modo, registros_visor, todas, key_prefix, periodo)
     # La gráfica ampliada (principal o de "Más gráficos") se abre aquí, fuera del fragmento en vivo
     ampliada = st.session_state.get("grafica_ampliada")

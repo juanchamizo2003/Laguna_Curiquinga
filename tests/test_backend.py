@@ -7,7 +7,7 @@ from backend import data_base, config as cfg, acceso, respaldo
 from backend.alertas import evaluar_registro, verificar_inactividad
 from backend.calidad import revisar_imagen, revisar_agua, estado_validacion, es_confiable, marcar_atipicas
 from backend.procesamiento import procesar_imagen
-from backend.servicio import extraer_fecha_hora_de_nombre
+from backend.servicio import extraer_fecha_hora_de_nombre, nombre_valido, motivo_nombre, fecha_captura_de_nombre
 from tests.conftest import nuevo_registro
 
 # ---------------------------------------------------------------- nombres de archivo
@@ -18,6 +18,30 @@ def test_fecha_desde_nombre():
 def test_fecha_sin_patron_usa_ahora():
     fecha, hora = extraer_fecha_hora_de_nombre("foto.jpg")
     assert fecha == datetime.now().strftime("%Y-%m-%d") and len(hora) == 8
+
+@pytest.mark.parametrize("nombre, valido", [
+    ("Curiquinga_20250302_152351M.jpg", True),
+    ("Curiquinga_20250302_152351.jpg", True),        # la letra final es opcional
+    ("curiquinga_20250302_152351M.JPG", True),       # mayúsculas/minúsculas no importan
+    ("Curiquinga_20250302_152351M.png", False),      # solo .jpg
+    ("Curiquinga_20250302_152351M.jpeg", False),
+    ("IMG_1234.jpg", False),
+    ("Curiquinga_2025032_152351M.jpg", False),       # fecha incompleta
+    ("Curiquinga_20251399_152351M.jpg", False),      # mes 13: la fecha no existe
+    ("Curiquinga_20250302_256000M.jpg", False),      # hora 25: no existe
+    ("copia Curiquinga_20250302_152351M.jpg", False),
+])
+def test_nombre_valido_de_la_camara(nombre, valido):
+    assert nombre_valido(nombre) is valido
+
+def test_nombre_con_fecha_futura_no_vale():
+    ahora = datetime(2026, 1, 1, 12, 0, 0)
+    assert "futuro" in motivo_nombre("Curiquinga_20300101_120000M.jpg", ahora)
+    assert motivo_nombre("Curiquinga_20260101_235959M.jpg", ahora) == ""  # margen por el reloj de la cámara
+
+def test_misma_captura_aunque_cambie_el_nombre():
+    assert (fecha_captura_de_nombre("Curiquinga_20250302_152351M.jpg")
+            == fecha_captura_de_nombre("Curiquinga_20250302_152351.jpg") == "2025-03-02 15:23:51")
 
 # ---------------------------------------------------------------- calidad
 
@@ -208,6 +232,39 @@ def test_agua_sin_color_se_descarta_sin_guardar(bd_temporal, tmp_path, monkeypat
     assert data_base.obtener_registros() == []
     assert not (tmp_path / "proc").exists()
 
+@pytest.mark.parametrize("nombre, avisa", [
+    (f"Curiquinga_{datetime.now():%Y%m%d_%H%M%S}M.jpg", True),   # de ahora: es una alerta real
+    ("Curiquinga_20200101_120000M.jpg", False),                  # carpeta histórica: se guarda sin avisar
+])
+def test_foto_antigua_guarda_la_alerta_pero_no_notifica(bd_temporal, tmp_path, monkeypatch, nombre, avisa):
+    import cv2
+    from backend import procesamiento, alertas
+    monkeypatch.setattr(procesamiento, "DIR_PROCESADAS", str(tmp_path / "proc"))
+    monkeypatch.setattr(procesamiento, "BASE_DIR", str(tmp_path))
+    enviadas = []
+    monkeypatch.setattr(alertas, "notificar_alerta", lambda *a, **k: enviadas.append(a))
+    ruta = tmp_path / nombre
+    cv2.imwrite(str(ruta), _imagen_textura())
+
+    def area_baja(ruta_img, calibracion):
+        return True, "ok", {"area": 100, "perimetro": 50, "color_hex": "#71C1B8", "confianza": 0.97,
+                            "img_visual": np.zeros((1080, 1920, 3), np.uint8)}
+
+    r = procesar_imagen(str(ruta), "Manual", analizar=area_baja)
+    assert r["alertas"] and r["notificada"] is avisa       # la alerta queda en el historial en los dos casos
+    assert bool(enviadas) is avisa
+
+def test_cancelar_interrumpe_el_analisis_de_sam():
+    """SAM mira entre capa y capa si pidieron cancelar; después de atenderlo se puede volver a analizar."""
+    from backend import motor
+    motor.permitir_analisis()
+    motor._revisar_cancelacion(None, None)        # sin cancelar: sigue
+    motor.cancelar_analisis()
+    with pytest.raises(motor.AnalisisCancelado):
+        motor._revisar_cancelacion(None, None)
+    motor.liberar_modelo()                        # al terminar el lote se limpia
+    motor._revisar_cancelacion(None, None)
+
 def test_procesar_imagen_oscura_no_llama_a_sam(bd_temporal, tmp_path):
     import cv2
     ruta = tmp_path / "noche.jpg"
@@ -260,6 +317,13 @@ def test_eliminar_registro_borra_sus_alertas(bd_temporal):
     assert data_base.obtener_alertas()
     data_base.eliminar_registro(r["id"])
     assert data_base.obtener_alertas() == []
+
+def test_alertas_por_registro_agrupa_mensajes(bd_temporal):
+    """La gráfica marca con un aro las capturas con alerta y muestra sus mensajes en el tooltip."""
+    data_base.guardar_alerta("area_baja", "critica", "Área baja", registro_id=3)
+    data_base.guardar_alerta("cambio_brusco", "aviso", "Cambio brusco", registro_id=3)
+    data_base.guardar_alerta("sin_fotos", "aviso", "Sin fotos")  # no es de ninguna captura
+    assert data_base.alertas_por_registro() == {3: ["Área baja", "Cambio brusco"]}
 
 def test_fotos_descartadas_cuentan_como_actividad(bd_temporal):
     """De noche llegan fotos que se descartan por oscuras: la cámara funciona, no hay que avisar."""

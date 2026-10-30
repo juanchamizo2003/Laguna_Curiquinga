@@ -33,12 +33,13 @@ def activar_tooltip():
     const p = ev.points && ev.points.find(p => p.data && p.data.meta === META);
     if (!p || !p.customdata) return;
     clearTimeout(ocultar);
-    const [fecha, area, color, conf] = p.customdata;
+    const [fecha, area, color, conf, alerta] = p.customdata;
     tip.innerHTML = `
       <div>__FECHA__<b>${esc(fecha)}</b></div>
       <div>__AREA__<b>${esc(area)}</b></div>
       <div><span class="tt-sw" style="background:${esc(color)}"></span><b>${esc(color)}</b></div>
-      <div>__CONF__<b>${esc(conf)}</b></div>`;
+      <div>__CONF__<b>${esc(conf)}</b></div>` +
+      (alerta ? `<p class="tt-alerta">${esc(alerta)}</p>` : "");
     const e = ev.event, ancho = tip.offsetWidth || 190, alto = tip.offsetHeight || 120;
     let x = e.clientX + 10, y = e.clientY + 10;
     if (x + ancho > innerWidth - 8) x = e.clientX - ancho - 10;
@@ -50,6 +51,14 @@ def activar_tooltip():
   const programarOcultar = () => { clearTimeout(ocultar); ocultar = setTimeout(() => { if (!dentro) tip.classList.remove("visible"); }, 450); };
   tip.addEventListener("mouseenter", () => { dentro = true; clearTimeout(ocultar); });
   tip.addEventListener("mouseleave", () => { dentro = false; programarOcultar(); });
+  // Plotly no avisa del "unhover" si algo (un diálogo, otra vista) tapa la gráfica: sin esto el tooltip
+  // se quedaba encima. Se oculta al salir de la gráfica o al pulsar en cualquier otro sitio.
+  document.addEventListener("pointermove", (e) => {
+    if (tip.classList.contains("visible") && !e.target.closest(".js-plotly-plot, .tt-laguna")) programarOcultar();
+  }, { passive: true });
+  document.addEventListener("pointerdown", (e) => {
+    if (!e.target.closest(".tt-laguna")) { dentro = false; tip.classList.remove("visible"); }
+  }, true);
 
   // Las gráficas se recrean al relanzar Streamlit: se engancha cada una la primera vez que aparece
   setInterval(() => {

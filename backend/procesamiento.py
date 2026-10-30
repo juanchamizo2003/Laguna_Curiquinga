@@ -1,10 +1,10 @@
 """Flujo común de una captura: calidad → SAM → trazo y miniatura → registro → alertas.
 
-Lo usan el vigilante (origen Automático), la carga manual (Manual) y el reprocesado desde el panel,
+Lo usan el vigilante (origen Automático), la carga manual (Manual) y el reprocesado,
 así los tres aplican exactamente las mismas reglas.
 """
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import cv2
 
 from backend import config as cfg
@@ -15,6 +15,15 @@ from backend.servicio import extraer_fecha_hora_de_nombre
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIR_PROCESADAS = os.path.join(BASE_DIR, "flujo_imagenes", "fotos_procesadas")
+HORAS_NOTIFICAR = 24  # una foto más antigua guarda su alerta, pero no avisa por Telegram ni correo
+
+def es_reciente(fecha_captura, ahora=None):
+    """False para capturas antiguas (p. ej. al cargar una carpeta histórica): su alerta no es de hoy."""
+    try:
+        fecha = datetime.fromisoformat(str(fecha_captura))
+    except ValueError:
+        return True
+    return (ahora or datetime.now()) - fecha <= timedelta(hours=HORAS_NOTIFICAR)
 
 def procesar_imagen(ruta_abs, origen, evaluar_alertas=True, analizar=None, fecha_subida=None):
     """Procesa una foto ya guardada en su carpeta de origen.
@@ -68,11 +77,13 @@ def procesar_imagen(ruta_abs, origen, evaluar_alertas=True, analizar=None, fecha
     ruta_miniatura(registro)
 
     alertas = []
+    notificada = es_reciente(registro["fecha_captura"])
     if evaluar_alertas:
         from backend.alertas import evaluar_registro
-        alertas = evaluar_registro(registro, config)
+        alertas = evaluar_registro(registro, config, notificar=notificada)
 
-    return {"resultado": "registrada", "mensaje": msg, "registro": registro, "alertas": alertas}
+    return {"resultado": "registrada", "mensaje": msg, "registro": registro, "alertas": alertas,
+            "notificada": notificada}
 
 def reprocesar_registro(registro, analizar=None):
     """Vuelve a analizar la foto original de un registro con la calibración y los umbrales actuales."""

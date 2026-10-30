@@ -9,7 +9,7 @@ import re
 import sys
 import json
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVICIO_DIR = os.path.join(BASE_DIR, "base_datos", "servicio")
@@ -24,6 +24,33 @@ TOLERANCIA_LATIDO = 3 * INTERVALO_LATIDO
 MAX_BYTES_LOG = 512 * 1024    # al superarlo, el log se recorta a su mitad más reciente
 
 EXTENSIONES_IMAGEN = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+# Nombre de las fotos de la cámara: Curiquinga_AAAAMMDD_HHMMSS más una letra opcional (p. ej. la M), en .jpg
+PATRON_NOMBRE = re.compile(r"^Curiquinga_(\d{8})_(\d{6})[A-Za-z]?\.jpg$", re.IGNORECASE)
+FORMATO_NOMBRE = "Curiquinga_AAAAMMDD_HHMMSS.jpg"
+
+def motivo_nombre(nombre, ahora=None):
+    """Por qué un archivo no vale en la carga manual ("" si vale): debe seguir el formato de la cámara, con una
+    fecha y hora que existan (no 20251399_256000) y que no sean futuras. Sin eso no se sabría cuándo se tomó."""
+    coincide = PATRON_NOMBRE.match(os.path.basename(str(nombre)))
+    if not coincide:
+        return f"el nombre no tiene el formato {FORMATO_NOMBRE}"
+    try:
+        fecha = datetime.strptime("".join(coincide.groups()), "%Y%m%d%H%M%S")
+    except ValueError:
+        return "la fecha u hora del nombre no existe"
+    # Un día de margen por si el reloj de la cámara y el del servidor no coinciden
+    if fecha > (ahora or datetime.now()) + timedelta(days=1):
+        return "la fecha del nombre está en el futuro"
+    return ""
+
+def nombre_valido(nombre):
+    return not motivo_nombre(nombre)
+
+def fecha_captura_de_nombre(nombre):
+    """'AAAA-MM-DD HH:MM:SS' de la foto: identifica la captura aunque el nombre cambie (con o sin la M final)."""
+    fecha, hora = extraer_fecha_hora_de_nombre(nombre)
+    return f"{fecha} {hora}"
 
 def extraer_fecha_hora_de_nombre(filename):
     """Extrae Fecha (AAAA-MM-DD) y Hora (HH:MM:SS 24h) del nombre del archivo."""

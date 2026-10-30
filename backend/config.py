@@ -64,6 +64,9 @@ POR_DEFECTO = {
         "color_auto": "#3cc9b4",
         "color_manual": "#f5a742",
         "tendencia": False,
+        "alertas": False,             # línea del área mínima y aros en las capturas que dispararon una alerta
+        "color_tendencia": "#8b95a3",
+        "color_alertas": "#f0616d",
         "orden": [],                  # orden de las tarjetas en "Otros tipos de gráfico" (vacío = el de siempre)
     },
 }

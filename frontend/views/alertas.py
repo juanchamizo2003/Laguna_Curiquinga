@@ -4,6 +4,7 @@ import streamlit as st
 from backend import config as cfg
 from backend.alertas import evaluar_registro, NIVELES
 from backend.data_base import obtener_alertas, marcar_alertas_leidas, eliminar_alertas, obtener_registros
+from frontend.components import recordar
 from frontend.components.formato import fecha_legible
 from frontend.components.tarjetas import tarjeta_kpi, punto, ICONO_CHECK, ICONO_PROMEDIO, ICONO_SERVIDOR
 
@@ -81,7 +82,8 @@ def render_alertas():
             st.markdown("<div class='card-title'>Historial</div><div class='card-sub'>Las más recientes primero</div>",
                         unsafe_allow_html=True)
         with c2, st.container(horizontal=True, horizontal_alignment="right"):
-            filtro = st.segmented_control("Filtro", ["Todas", "Sin leer"], default="Todas", key="alertas_filtro",
+            recordar.widget("alertas_filtro", ["Todas", "Sin leer"])
+            filtro = st.segmented_control("Filtro", ["Todas", "Sin leer"], key="alertas_filtro",
                                           label_visibility="collapsed") or "Todas"
         visibles = no_leidas if filtro == "Sin leer" else alertas
         if not visibles:

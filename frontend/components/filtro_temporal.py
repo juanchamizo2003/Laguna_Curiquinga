@@ -4,6 +4,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+from frontend.components import recordar
 from frontend.components.formato import MESES_CORTOS, fecha_legible
 
 TIPOS = ["Días", "Meses", "Años"]               # filtro de la tabla de registros
@@ -16,15 +17,19 @@ MESES_LARGOS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", 
                 "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 ANIOS_POR_PAGINA = 12
 
-# El estado del filtro vive en claves globales para que el panel y la tabla compartan la selección
+# El estado del filtro vive en claves globales; la tabla de registros usa las suyas con el prefijo REGISTROS,
+# para que filtrarla no cambie lo que muestra la gráfica del Inicio
+REGISTROS = "reg_"
 CLAVE_POR_TIPO = {"Días": "fechas_seleccionadas", "Meses": "meses_seleccionados", "Años": "anios_seleccionados"}
 
 def _inicializar_estado():
-    st.session_state.setdefault("tipo_seleccion", "En vivo")   # al abrir o recargar, la gráfica arranca en vivo
+    st.session_state.setdefault("tipo_seleccion", "En vivo")   # al abrir la app, la gráfica arranca en vivo
     st.session_state.setdefault("limite_dias", 7)
-    st.session_state.setdefault("fechas_seleccionadas", [])   # ["2026-04-26", ...]
-    st.session_state.setdefault("meses_seleccionados", [])    # ["2026-04", ...]
-    st.session_state.setdefault("anios_seleccionados", [])    # ["2026", ...]
+    st.session_state.setdefault(REGISTROS + "tipo_seleccion", "Días")
+    for prefijo in ("", REGISTROS):
+        st.session_state.setdefault(prefijo + "fechas_seleccionadas", [])   # ["2026-04-26", ...]
+        st.session_state.setdefault(prefijo + "meses_seleccionados", [])    # ["2026-04", ...]
+        st.session_state.setdefault(prefijo + "anios_seleccionados", [])    # ["2026", ...]
 
 def _fechas_de(df):
     if df.empty or "fecha_captura" not in df.columns:
@@ -52,19 +57,17 @@ def _formato_opcion(tipo):
 def _copiar_a_global(key, clave_global, vacio):
     st.session_state[clave_global] = st.session_state[key] or vacio
 
-def _selector_tipo(key_prefix, opciones=TIPOS):
+def _selector_tipo(key_prefix, opciones=TIPOS, prefijo=""):
     key = f"{key_prefix}_compact_tipo"
-    # La tabla no tiene "En vivo": ahí se muestra como Días
-    actual = st.session_state.tipo_seleccion
-    st.session_state[key] = actual if actual in opciones else "Días"
+    st.session_state[key] = st.session_state[prefijo + "tipo_seleccion"]
     st.segmented_control(
         "Tipo", opciones, key=key, label_visibility="collapsed",
-        on_change=_copiar_a_global, args=(key, "tipo_seleccion", "En vivo")
+        on_change=_copiar_a_global, args=(key, prefijo + "tipo_seleccion", opciones[0])
     )
 
-def _multiselect_sincronizado(df, tipo, key_prefix, placeholder):
+def _multiselect_sincronizado(df, tipo, key_prefix, placeholder, prefijo=""):
     """Multiselect de días/meses/años presentes en los datos, sincronizado con la clave global."""
-    clave_global = CLAVE_POR_TIPO[tipo]
+    clave_global = prefijo + CLAVE_POR_TIPO[tipo]
     key = f"{key_prefix}_{clave_global}"
     opciones = _opciones(df, tipo)
     # Se descartan valores que ya no existen en los datos (si no, Streamlit lanza error)
@@ -102,17 +105,16 @@ def aplicar_filtro_temporal(df, ventana_dias=True):
     if fechas.dropna().empty:
         return df, "Sin muestras registradas"
 
-    tipo = st.session_state.tipo_seleccion
+    prefijo = "" if ventana_dias else REGISTROS
+    tipo = st.session_state[prefijo + "tipo_seleccion"]
     if tipo == "En vivo":
-        if ventana_dias:
-            ultimas = fechas.dropna().sort_values().index[-N_EN_VIVO:]
-            return df[fechas.index.isin(ultimas)], f"En vivo · últimas {N_EN_VIVO} capturas"
-        tipo = "Días"
+        ultimas = fechas.dropna().sort_values().index[-N_EN_VIVO:]
+        return df[fechas.index.isin(ultimas)], f"En vivo · últimas {N_EN_VIVO} capturas"
 
     mascara = fechas.notna()
     descripcion = "Todo el historial"
     if tipo == "Días":
-        dias = st.session_state.fechas_seleccionadas
+        dias = st.session_state[prefijo + "fechas_seleccionadas"]
         if dias:
             mascara = fechas.dt.strftime("%Y-%m-%d").isin(dias)
             descripcion = f"{len(dias)} día(s) marcado(s)"
@@ -123,12 +125,12 @@ def aplicar_filtro_temporal(df, ventana_dias=True):
             dias_con_datos = sorted(fechas.dropna().dt.normalize().unique())[-n:]
             mascara = fechas.dt.normalize().isin(dias_con_datos)
             descripcion = f"Últimos {n} días con datos"
-    elif tipo == "Meses" and st.session_state.meses_seleccionados:
-        meses = st.session_state.meses_seleccionados
+    elif tipo == "Meses" and st.session_state[prefijo + "meses_seleccionados"]:
+        meses = st.session_state[prefijo + "meses_seleccionados"]
         mascara = fechas.dt.strftime("%Y-%m").isin(meses)
         descripcion = ", ".join(_texto_mes(m) for m in sorted(meses))
-    elif tipo == "Años" and st.session_state.anios_seleccionados:
-        anios = st.session_state.anios_seleccionados
+    elif tipo == "Años" and st.session_state[prefijo + "anios_seleccionados"]:
+        anios = st.session_state[prefijo + "anios_seleccionados"]
         mascara = fechas.dt.strftime("%Y").isin(anios)
         descripcion = ", ".join(sorted(anios))
 
@@ -166,6 +168,8 @@ def render_filtro_compacto(df, key_prefix="default"):
 
         st.button("", icon=":material/restart_alt:", key=f"{key_prefix}_btn_reset", help="Restablecer filtro",
                   on_click=restablecer_filtro, type="tertiary")
+    # Esta fila se relanza dentro de un fragmento: sin esto, el cambio no llegaría a la dirección
+    recordar.sincronizar()
 
 # ---------------------------------------------------------------- calendario (ventana emergente)
 # Se edita un borrador (claves cal_*) y solo "Aplicar" lo pasa al filtro; cerrar la ventana lo descarta.
@@ -220,6 +224,8 @@ def _mover_mes(paso):
 def _sumar(clave, paso):
     st.session_state[clave] += paso
 
+# Solo se pueden marcar días, meses y años con capturas ("sin" sale desactivado): uno vacío dejaba la gráfica
+# sin nada. Uno ya marcado sigue activo aunque no tenga datos, para poder desmarcarlo.
 def _estado(valor, seleccion, con_datos):
     return "sel" if valor in seleccion else ("con" if valor in con_datos else "sin")
 
@@ -255,7 +261,7 @@ def _cuadricula_dias(con_datos, anios):
             estado = _estado(iso, ss.cal_dias, con_datos)
             fuera = "f" if dia.month != mes else "m"
             col.button(str(dia.day), key=f"cal_d_{estado}_{fuera}_{iso}", width="stretch",
-                       type="primary" if estado == "sel" else "secondary",
+                       type="primary" if estado == "sel" else "secondary", disabled=estado == "sin",
                        on_click=_alternar, args=("cal_dias", iso, limite))
 
 def _cuadricula_meses(con_datos):
@@ -269,7 +275,8 @@ def _cuadricula_meses(con_datos):
             clave = f"{ss.cal_anio_meses}-{mes:02d}"
             estado = _estado(clave, ss.cal_meses, con_datos)
             col.button(MESES_LARGOS[mes - 1], key=f"cal_m_{estado}_{clave}", width="stretch",
-                       type="primary" if estado == "sel" else "secondary", on_click=_alternar, args=("cal_meses", clave))
+                       type="primary" if estado == "sel" else "secondary", disabled=estado == "sin",
+                       on_click=_alternar, args=("cal_meses", clave))
 
 def _cuadricula_anios(con_datos):
     ss = st.session_state
@@ -286,7 +293,8 @@ def _cuadricula_anios(con_datos):
             clave = str(anio)
             estado = _estado(clave, ss.cal_anios, con_datos)
             col.button(clave, key=f"cal_a_{estado}_{clave}", width="stretch",
-                       type="primary" if estado == "sel" else "secondary", on_click=_alternar, args=("cal_anios", clave))
+                       type="primary" if estado == "sel" else "secondary", disabled=estado == "sin",
+                       on_click=_alternar, args=("cal_anios", clave))
 
 def _aplicar_borrador(tipo):
     ss = st.session_state
@@ -342,7 +350,7 @@ def render_filtro_temporal(df, key_prefix="tabla"):
     _inicializar_estado()
     c1, c2 = st.columns([1, 3], gap="small", vertical_alignment="center")
     with c1:
-        _selector_tipo(key_prefix)
+        _selector_tipo(key_prefix, prefijo=REGISTROS)
     with c2:
-        tipo = st.session_state.tipo_seleccion if st.session_state.tipo_seleccion in TIPOS else "Días"
-        _multiselect_sincronizado(df, tipo, key_prefix, f"Todos los {tipo.lower()}")
+        tipo = st.session_state[REGISTROS + "tipo_seleccion"]
+        _multiselect_sincronizado(df, tipo, key_prefix, f"Todos los {tipo.lower()}", prefijo=REGISTROS)

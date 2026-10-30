@@ -16,6 +16,10 @@ _CLAVES_ATIPICAS = ("atipico_pct", "atipico_ventana_h", "atipico_vecinas")
 def _cargar(marca, umbrales):
     return marcar_atipicas(obtener_registros(), dict(umbrales))
 
+def refrescar():
+    """Vuelve a leer la base aunque la caché crea que no cambió."""
+    _cargar.clear()
+
 def registros():
     """Registros con la marca 'atipica' calculada; la caché se renueva al cambiar la BD o los umbrales."""
     q = cfg.cargar()["calidad"]
