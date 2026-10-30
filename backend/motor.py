@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import torch
 
+from backend import config as cfg
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELOS_DIR = os.path.join(BASE_DIR, "modelos")
 RUTA_MODELO_SAM = os.path.join(MODELOS_DIR, "sam_vit_b_01ec64.pth")
@@ -31,7 +33,9 @@ def redimensionar_para_ia(img, max_dim=1024):
         return img_res, escala
     return img, 1.0
 
-def analizar_laguna(ruta_img):
+def analizar_laguna(ruta_img, calibracion=None):
+    """Segmenta la laguna. calibracion permite probar valores sin guardarlos (pantalla de Configuración)."""
+    calibracion = calibracion or cfg.cargar()["calibracion"]
     if not os.path.exists(ruta_img):
         return False, f"No se encontró el archivo: {ruta_img}", None
 
@@ -48,32 +52,28 @@ def analizar_laguna(ruta_img):
 
         with torch.inference_mode():
             predictor.set_image(img_rgb)
-            pts_originales = np.array([
-                [723, 1040],
-                [380, 1000],
-                [490, 1030],
-                [600, 1050]
-            ], dtype=np.float32)
+            puntos = np.array(calibracion["puntos_sam"], dtype=np.float32)
+            puntos_referencia = (puntos[:, :2] * escala).astype(np.int32)
+            etiquetas = puntos[:, 2].astype(np.int32)
 
-            puntos_referencia = (pts_originales * escala).astype(np.int32)
-            etiquetas = np.array([1, 0, 0, 0])
-
-            masks, _, _ = predictor.predict(
+            masks, puntajes, _ = predictor.predict(
                 point_coords=puntos_referencia,
                 point_labels=etiquetas,
                 multimask_output=False
             )
 
         mascara_agua = masks[0].astype(np.uint8)
+        # Calidad de la máscara estimada por SAM (IoU predicho, 0-1)
+        confianza = round(float(puntajes[0]), 4)
 
-        pts_origen_orig = np.float32([[277, 689], [1273, 689], [277, 1077], [1273, 1077]])
+        pts_origen_orig = np.float32(calibracion["homografia"])
         pts_origen = pts_origen_orig * escala
         pts_destino = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
         matriz_homografia = cv2.getPerspectiveTransform(pts_origen, pts_destino)
 
         mascara_plana = cv2.warpPerspective(mascara_agua, matriz_homografia, (w, h))
         area_px = np.sum(mascara_plana)
-        area_m2 = int(round((area_px / (escala ** 2)) * 0.192385))
+        area_m2 = int(round((area_px / (escala ** 2)) * calibracion["m2_por_px"]))
 
         pixeles_agua = img_rgb[mascara_agua == 1]
         if len(pixeles_agua) > 0:
@@ -91,7 +91,7 @@ def analizar_laguna(ruta_img):
             if escala != 1.0:
                 contorno_principal = (contorno_principal / escala).astype(np.int32)
             perimetro_px = cv2.arcLength(contorno_principal, True)
-            perimetro_m = int(round(perimetro_px * 0.4318))
+            perimetro_m = int(round(perimetro_px * calibracion["m_por_px"]))
             cv2.drawContours(img_resultado_visual, [contorno_principal], -1, (255, 0, 0), 2)
 
         del img, img_opt, img_rgb, masks, mascara_agua
@@ -103,6 +103,7 @@ def analizar_laguna(ruta_img):
             "area": area_m2,
             "perimetro": perimetro_m,
             "color_hex": color_hex,
+            "confianza": confianza,
             "img_visual": img_resultado_visual
         }
 

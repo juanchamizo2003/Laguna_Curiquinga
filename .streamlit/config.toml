@@ -1,10 +1,25 @@
 [theme]
-base = "light"
-primaryColor = "#1f4fd8"
-backgroundColor = "#f4f6fa"
-secondaryBackgroundColor = "#ffffff"
-textColor = "#141a2b"
-font = "sans serif"
+baseRadius = "12px"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+
+# Con [theme.light] y [theme.dark] el panel puede alternar entre ambos (botón del encabezado del inicio)
+[theme.dark]
+primaryColor = "#3cc9b4"
+backgroundColor = "#0b0f14"
+secondaryBackgroundColor = "#151b22"
+textColor = "#e8edf2"
+borderColor = "#232a33"
+
+[theme.light]
+primaryColor = "#17a08e"
+backgroundColor = "#edf0f4"
+secondaryBackgroundColor = "#e9edf2"
+textColor = "#17212c"
+borderColor = "#dce1e7"
+
+[client]
+toolbarMode = "viewer"
 
 [server]
 headless = true
+enableStaticServing = true
