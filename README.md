@@ -36,27 +36,51 @@ run.py               Arranca el vigilante y Streamlit a la vez
 ```
 ## Instalación
 
-Requiere Python 3.10 o superior (desarrollado con 3.14).
+Requiere Python 3.10 o superior (desarrollado con 3.14). Los pasos son para Windows (PowerShell),
+ejecutados desde la carpeta raíz del proyecto:
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # Linux / macOS
+```powershell
+# 1. Crear el entorno virtual (solo la primera vez)
+py -m venv .venv
+
+# 2. Activarlo (cada vez que se abra una terminal nueva)
+.\.venv\Scripts\Activate.ps1
+
+# 3. Actualizar pip
+python -m pip install --upgrade pip
+
+# 4. Instalar todas las librerías (Streamlit, Plotly, SAM, torch, etc.)
 pip install -r requirements.txt
+
+# 5. Descargar los pesos del modelo SAM (~375 MB) a la carpeta modelos/
+Invoke-WebRequest https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth -OutFile modelos\sam_vit_b_01ec64.pth
 ```
+
+Si PowerShell no deja activar el entorno ("la ejecución de scripts está deshabilitada"), ejecuta una vez
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` y vuelve al paso 2.
+
+En Linux / macOS: `python3 -m venv .venv`, `source .venv/bin/activate` y luego los pasos 3 a 5
+(el paso 5 con `curl -o modelos/sam_vit_b_01ec64.pth <enlace>`).
+
+Ya no hace falta instalar aparte `segment-anything`, `plotly` ni `streamlit-calendar`: los dos primeros
+vienen en `requirements.txt` y el calendario ahora es propio del panel.
 
 Para usar la GPU, instala la variante CUDA de `torch` y `torchvision` siguiendo https://pytorch.org/get-started/locally/. Sin GPU el modelo corre en CPU, pero cada imagen tarda bastante más.
 
 ### Pesos del modelo
 
-El archivo `.pth` pesa unos 375 MB y está excluido de git. Descárgalo y guárdalo como `modelos/sam_vit_b_01ec64.pth`:
+El archivo `.pth` pesa unos 375 MB y no se sube a git (está en `.gitignore`); la carpeta `modelos/`
+sí está en el repositorio, con un `LEEME.md` que lo recuerda. Debe quedar como
+`modelos/sam_vit_b_01ec64.pth`, descargado de:
 
 https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
 
 ## Ejecución
 
-```bash
-python run.py                       # vigilante + panel
+Con el entorno virtual activado (paso 2):
+
+```powershell
+py run.py                                 # vigilante + panel, a la vez
 python -m streamlit run frontend/app.py   # solo el panel
 ```
 
