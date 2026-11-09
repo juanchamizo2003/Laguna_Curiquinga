@@ -17,8 +17,8 @@ from frontend.components.datos import registros
 from frontend.components.visor_laguna import boton_tema
 
 st.set_page_config(
-    page_title="Monitoreo Laguna Curiquinga",
-    page_icon="🌊",
+    page_title="LC Visión", 
+    page_icon="frontend/logos/lcmini.png",
     layout="wide",
     initial_sidebar_state="expanded"
 )
