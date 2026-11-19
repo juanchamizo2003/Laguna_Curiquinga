@@ -26,13 +26,11 @@ def activar_tooltip():
   const tip = document.createElement("div");
   tip.className = "tt-laguna";
   document.body.appendChild(tip);
-  let ocultar = null, dentro = false;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 
   const mostrar = (ev) => {
     const p = ev.points && ev.points.find(p => p.data && p.data.meta === META);
     if (!p || !p.customdata) return;
-    clearTimeout(ocultar);
     const [fecha, area, color, conf, alerta] = p.customdata;
     tip.innerHTML = `
       <div>__FECHA__<b>${esc(fecha)}</b></div>
@@ -47,18 +45,15 @@ def activar_tooltip():
     tip.style.left = x + "px"; tip.style.top = y + "px";
     tip.classList.add("visible");
   };
-  // Se oculta con un pequeño retraso para que dé tiempo a entrar al tooltip y pasar por el cuadrito
-  const programarOcultar = () => { clearTimeout(ocultar); ocultar = setTimeout(() => { if (!dentro) tip.classList.remove("visible"); }, 450); };
-  tip.addEventListener("mouseenter", () => { dentro = true; clearTimeout(ocultar); });
-  tip.addEventListener("mouseleave", () => { dentro = false; programarOcultar(); });
+  // Se oculta en cuanto el ratón deja el punto: el tooltip no recibe el ratón (CSS), así no se queda
+  // abierto ni tapa los puntos de al lado
+  const ocultar = () => tip.classList.remove("visible");
   // Plotly no avisa del "unhover" si algo (un diálogo, otra vista) tapa la gráfica: sin esto el tooltip
-  // se quedaba encima. Se oculta al salir de la gráfica o al pulsar en cualquier otro sitio.
+  // se quedaba encima. Se oculta al salir de la gráfica o al pulsar en cualquier sitio.
   document.addEventListener("pointermove", (e) => {
-    if (tip.classList.contains("visible") && !e.target.closest(".js-plotly-plot, .tt-laguna")) programarOcultar();
+    if (tip.classList.contains("visible") && !e.target.closest(".js-plotly-plot")) ocultar();
   }, { passive: true });
-  document.addEventListener("pointerdown", (e) => {
-    if (!e.target.closest(".tt-laguna")) { dentro = false; tip.classList.remove("visible"); }
-  }, true);
+  document.addEventListener("pointerdown", ocultar, true);
 
   // Las gráficas se recrean al relanzar Streamlit: se engancha cada una la primera vez que aparece
   setInterval(() => {
@@ -66,7 +61,7 @@ def activar_tooltip():
       if (gd.__ttLaguna || typeof gd.on !== "function") return;
       gd.__ttLaguna = true;
       gd.on("plotly_hover", mostrar);
-      gd.on("plotly_unhover", programarOcultar);
+      gd.on("plotly_unhover", ocultar);
     });
   }, 700);
 })();

@@ -4,7 +4,7 @@ import re
 import html
 import json
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 import streamlit as st
 
 from backend import acceso
@@ -17,7 +17,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 DIR_ESTATICO = os.path.join(BASE_DIR, "frontend", "static", "visor")
 ANCHO_VISOR = 1600
 N_CARRUSEL = 10
-FOTOS_POR_PAGINA = 12  # 4 filas de 3
+FOTOS_POR_PAGINA = 6  # 2 filas de 3: caben enteras en la ventana y con muchas capturas no se cargan todas a la vez
 COLUMNAS_GALERIA = 3
 SEGUNDOS_ROTACION = 15
 
@@ -107,8 +107,6 @@ def render_visor_laguna(registros, todas=None, key_prefix="visor_default", perio
                      help=f"Fotos del periodo filtrado en la gráfica: {periodo}" if periodo else None):
             st.session_state.galeria_sel = None
             st.session_state.galeria_pag = 0
-            st.session_state.pop("galeria_dia_v", None)
-            st.session_state.pop("galeria_dia_mes", None)
             _modo_comparar(False)
             galeria_fotos(todas, periodo)
         elif st.session_state.pop("galeria_reabrir", False):
@@ -133,17 +131,9 @@ def _datos_foto(r, orden=0):
             f"<span><i class='vl-sw' style='background:{color}'></i>{color}</span>"
             f"<span title='Confianza del modelo'>{texto_confianza(r)}</span></div>")
 
-def _texto_galeria(registros, periodo, dia=None):
-    """Encabezado: en vivo, las últimas capturas; con filtro, el periodo y sus fechas reales;
-    con un día elegido, ese día, sus capturas y entre qué áreas se movió."""
+def _texto_galeria(registros, periodo):
+    """Encabezado: en vivo, las últimas capturas; con filtro, el periodo y sus fechas reales."""
     n = len(registros)
-    if dia:
-        chip = ("<span class='gal-chip filtro'><i></i>Filtro</span>" if periodo
-                else "<span class='gal-chip vivo'><i></i>En vivo</span>")
-        areas = [float(r.get("area", 0)) for r in registros]
-        rango = f" · de {formatear_m2(min(areas))} a {formatear_m2(max(areas))}" if n > 1 else ""
-        return (f"<div class='gal-titulo'>{chip}{fecha_legible(dia, con_hora=False)} · "
-                f"{n} captura(s){rango}</div>")
     if not periodo:
         return (f"<div class='gal-titulo'><span class='gal-chip vivo'><i></i>En vivo</span>"
                 f"Últimas {n} captura(s), de la más reciente a la más antigua</div>")
@@ -169,38 +159,27 @@ def _ir_pagina(pagina):
     st.session_state.galeria_pag = pagina
 
 def _al_cerrar_galeria():
-    """La X del diálogo: con una foto abierta vuelve a la cuadrícula; comparando, al panel de comparar con las
-    mismas fechas (para cambiar solo una y volver a comparar). En la cuadrícula cierra la galería."""
+    """La X del diálogo vuelve un paso atrás: de la foto abierta a la cuadrícula, de la comparación a elegir las
+    fotos y de elegir las fotos a la galería. Solo en la galería cierra."""
     ss = st.session_state
     if ss.get("galeria_sel") is not None:
         _cerrar_foto()
         ss.galeria_reabrir = True
-    elif ss.get("galeria_comparar") and len(ss.get("galeria_elegidas", [])) == 2:
-        ss.galeria_elegidas = []
+    elif ss.get("galeria_comparar"):
+        if len(ss.get("galeria_elegidas", [])) == 2:
+            _volver_a_elegir()
+        else:
+            _modo_comparar(False)
         ss.galeria_reabrir = True
-    else:
-        _modo_comparar(False)
 
 def _modo_comparar(activo):
+    """Entrar o salir de comparar: sin fotos elegidas, sin día filtrado y desde la primera página."""
     ss = st.session_state
     ss.galeria_comparar = activo
     ss.galeria_elegidas = []
-    # Las fechas del panel se recuerdan solo mientras se sigue comparando
-    for lado in ("Antes", "Después"):
-        for clave in (f"galeria_cmp_sel_{lado}", f"galeria_cmp_dia_{lado}_v", f"galeria_cmp_mes_{lado}"):
-            ss.pop(clave, None)
-
-def _pulsar_foto(indice):
-    """Clic en una foto: la abre o, en modo comparar, la marca (como mucho dos)."""
-    ss = st.session_state
-    if not ss.get("galeria_comparar"):
-        _ir_foto(indice)
-        return
-    elegidas = ss.setdefault("galeria_elegidas", [])
-    if indice in elegidas:
-        elegidas.remove(indice)
-    elif len(elegidas) < 2:
-        elegidas.append(indice)
+    ss.galeria_pag = 0
+    for clave in ("galeria_cmp_dia_v", "galeria_cmp_dia_mes"):
+        ss.pop(clave, None)
 
 def _fecha_de(r):
     try:
@@ -208,11 +187,22 @@ def _fecha_de(r):
     except ValueError:
         return None
 
-def _elegir_par(a, b):
-    st.session_state.galeria_elegidas = [a, b]
+def _elegir_para_comparar(indice):
+    """Paso 1: la primera foto tocada queda marcada (tocarla otra vez la quita) y, si se había filtrado un día,
+    se vuelven a ver todas para buscar la segunda. Paso 2: al tocar la segunda se comparan."""
+    ss = st.session_state
+    elegidas = ss.setdefault("galeria_elegidas", [])
+    if indice in elegidas:
+        elegidas.remove(indice)
+        return
+    elegidas.append(indice)
+    if len(elegidas) == 1 and ss.pop("galeria_cmp_dia_v", None):
+        ss.galeria_pag = 0
 
-def _elegir_dia(lado, dia):
-    st.session_state[f"galeria_cmp_dia_{lado}_v"] = dia
+def _poner_dia_cmp(dia):
+    """Al comparar, ver solo las fotos de un día (None = todas)."""
+    st.session_state.galeria_cmp_dia_v = dia
+    st.session_state.galeria_pag = 0
 
 def _mover_mes(clave_mes, meses):
     ss = st.session_state
@@ -251,100 +241,14 @@ def _calendario(slug, clave_mes, cuenta, dia_actual, al_elegir, args=()):
                            type="primary" if estado == "sel" else "tertiary", disabled=not con,
                            on_click=al_elegir, args=(*args, dia))
 
-def _selector_fecha(registros, por_dia, lado, por_defecto):
-    """Día (menú con calendario) y captura de ese día para una de las dos fotos, en una sola línea.
-    Devuelve (índice de la captura, aviso). Al volver de una comparación arranca en las fotos comparadas."""
-    dias = sorted(por_dia)
-    ss = st.session_state
-    previa = ss.get(f"galeria_cmp_sel_{lado}")
-    if previa is not None and 0 <= previa < len(registros) and _fecha_de(registros[previa]):
-        por_defecto = _fecha_de(registros[previa]).date()
-    dia = ss.get(f"galeria_cmp_dia_{lado}_v") or por_defecto
-    aviso = ""
-    if dia not in por_dia:
-        cercano = min(dias, key=lambda d: abs((d - dia).days))
-        aviso = (f"No hay capturas el {fecha_legible(dia, con_hora=False)}; "
-                 f"se usa el {fecha_legible(cercano, con_hora=False)}.")
-        dia = cercano
-    indices = por_dia[dia]
-    area = lambda i: float(registros[i].get("area", 0))
-    hora = lambda i: f"{_fecha_de(registros[i]):%H:%M}"
-    texto = lambda i: f"{hora(i)} · {formatear_m2(area(i))}"
-    slug = "antes" if lado == "Antes" else "despues"
-
-    st.markdown(f"<span class='cmp-lbl'>{lado}</span>", unsafe_allow_html=True, width="content")
-    with st.popover(fecha_legible(dia, con_hora=False), icon=":material/calendar_month:", key=f"galeria_cmp_pop_{slug}",
-                    help=f"{len(indices)} captura(s) ese día" + (f" · de {formatear_m2(min(map(area, indices)))} a "
-                                                                  f"{formatear_m2(max(map(area, indices)))}"
-                                                                  if len(indices) > 1 else "")):
-        _calendario(slug, f"galeria_cmp_mes_{lado}", {d: len(v) for d, v in por_dia.items()}, dia, _elegir_dia, (lado,))
-
-    # Con una foto por minuto un día tiene cientos: arriba van resúmenes del día y debajo todas, por hora
-    # (al escribir "14:3" la lista se filtra). Por defecto la mediana: la mayor o la menor suelen ser fotos raras
-    # (niebla parcial, reflejos), la mediana es la captura típica del día, como en las alertas.
-    resumen = {}
-    if len(indices) > 1:
-        por_area = sorted(indices, key=area)
-        minutos = lambda i: _fecha_de(registros[i]).hour * 60 + _fecha_de(registros[i]).minute
-        mediodia = min(indices, key=lambda i: abs(minutos(i) - 720))
-        lejos = abs(minutos(mediodia) - 720) > 90
-        resumen = {
-            "mediana": ("≈ Mediana del día", por_area[(len(por_area) - 1) // 2]),
-            "max": ("▲ Mayor área", por_area[-1]),
-            "min": ("▼ Menor área", por_area[0]),
-            "mediodia": ("☀ Más cercana a mediodía" if lejos else "☀ Mediodía", mediodia),
-        }
-    opciones = list(resumen) + indices
-    inicial = previa if previa in indices else ("mediana" if resumen else indices[0])
-    elegido = st.selectbox(
-        "Captura", opciones, index=opciones.index(inicial), key=f"galeria_cmp_hora_{lado}_{dia}", width=230,
-        format_func=lambda o: f"{resumen[o][0]} · {texto(resumen[o][1])}" if o in resumen else texto(o),
-        label_visibility="collapsed")
-    return (resumen[elegido][1] if elegido in resumen else elegido), aviso
-
-def _panel_comparar(registros):
-    """Una línea: Antes [día] [captura] → Después [día] [captura] [Comparar]; debajo, atajos en texto.
-    Marcar dos fotos en la cuadrícula sigue valiendo."""
-    por_dia = {}
-    for i, r in enumerate(registros):
-        fecha = _fecha_de(r)
-        if fecha:
-            por_dia.setdefault(fecha.date(), []).append(i)
-    if not por_dia:
-        return
-    for indices in por_dia.values():
-        indices.sort(key=lambda i: _fecha_de(registros[i]))
-    dias = sorted(por_dia)
-    con_fecha = [i for i in range(len(registros)) if _fecha_de(registros[i])]
-    primera = min(con_fecha, key=lambda i: _fecha_de(registros[i]))
-    ultima = max(con_fecha, key=lambda i: _fecha_de(registros[i]))
-    fecha_ultima = _fecha_de(registros[ultima])
-
-    with st.container(key="galeria_cmp_fechas"):
-        with st.container(horizontal=True, vertical_alignment="center", gap="small", key="galeria_cmp_fila"):
-            antes, aviso_a = _selector_fecha(registros, por_dia, "Antes", dias[0])
-            st.markdown("<span class='cmp-flecha'>→</span>", unsafe_allow_html=True, width="content")
-            despues, aviso_b = _selector_fecha(registros, por_dia, "Después", dias[-1])
-            st.space("stretch")
-            st.button("Comparar", icon=":material/compare:", type="primary", key="galeria_cmp_ir",
-                      on_click=_elegir_par, args=(antes, despues), disabled=antes == despues,
-                      help="Elige dos capturas distintas" if antes == despues else None)
-        # Atajos como enlaces; solo los que tienen sentido con estas fotos
-        atajos = [("Primera y última", primera)] if primera != ultima else []
-        for etiqueta, dias_atras in (("Hace 1 semana", 7), ("Hace 1 mes", 30), ("Hace 1 año", 365)):
-            objetivo = fecha_ultima - timedelta(days=dias_atras)
-            previa = min(con_fecha, key=lambda i: abs((_fecha_de(registros[i]) - objetivo).total_seconds()))
-            if previa != ultima and fecha_ultima - _fecha_de(registros[previa]) >= timedelta(days=dias_atras / 2):
-                atajos.append((etiqueta, previa))
-        if atajos:
-            with st.container(horizontal=True, vertical_alignment="center", gap=None, key="galeria_cmp_atajos"):
-                st.markdown("<span class='cmp-atajos-tit'>Rápido:</span>", unsafe_allow_html=True, width="content")
-                for etiqueta, previa in atajos:
-                    st.button(etiqueta, key=f"galeria_cmp_atajo_{etiqueta}", type="tertiary", on_click=_elegir_par,
-                              args=(previa, ultima), help=f"Compara la última captura con la de "
-                                                         f"{fecha_legible(registros[previa].get('fecha_captura'))}")
-        for aviso in filter(None, (aviso_a, aviso_b)):
-            st.markdown(f"<p class='cmp-sel-aviso'>{aviso}</p>", unsafe_allow_html=True)
+def _texto_comparar(registros, elegidas):
+    """Encabezado al comparar: en qué paso se está y, en el segundo, cuál es la primera foto."""
+    chip = "<span class='gal-chip comparar'><i></i>Comparar</span>"
+    if not elegidas:
+        return f"<div class='gal-titulo'>{chip}<b>Paso 1 de 2</b> · toca la primera foto</div>"
+    primera = fecha_legible(registros[elegidas[0]].get("fecha_captura", ""))
+    return (f"<div class='gal-titulo'>{chip}<b>Paso 2 de 2</b> · ahora toca la segunda foto "
+            f"(la primera, marcada con 1: {primera})</div>")
 
 def _tiempo_entre(a, b):
     """'24 días', '3 h'... entre dos fechas de captura."""
@@ -395,21 +299,19 @@ _COMPARADOR = """
 </script>"""
 
 def _volver_a_elegir():
+    """De la comparación a elegir otra vez las dos fotos, viéndolas todas."""
     st.session_state.galeria_elegidas = []
+    st.session_state.pop("galeria_cmp_dia_v", None)
 
 def _comparacion(registros, elegidas):
     """Dos capturas: la más antigua a la izquierda ("Antes") y la reciente a la derecha ("Después"),
     con un deslizador para pasar de una a otra o una al lado de la otra."""
     i_antes, i_despues = sorted(elegidas, key=lambda i: str(registros[i].get("fecha_captura")))
     antes, despues = registros[i_antes], registros[i_despues]
-    # Al volver con la X, el panel de comparar arranca en estas dos fotos
-    st.session_state.galeria_cmp_sel_Antes, st.session_state["galeria_cmp_sel_Después"] = i_antes, i_despues
-    st.session_state.galeria_cmp_dia_Antes_v = _fecha_de(antes).date() if _fecha_de(antes) else None
-    st.session_state["galeria_cmp_dia_Después_v"] = _fecha_de(despues).date() if _fecha_de(despues) else None
     with st.container(horizontal=True, vertical_alignment="center", gap="small", key="galeria_barra"):
         # Lo mismo que la X, pero a la vista: volver al panel con estas fechas para cambiar una
         st.button("Cambiar fotos", icon=":material/arrow_back:", key="galeria_cmp_volver", type="tertiary",
-                  on_click=_volver_a_elegir, help="Volver a elegir las fechas (se mantienen las de ahora)")
+                  on_click=_volver_a_elegir, help="Volver a elegir las dos fotos")
         modo = st.segmented_control("Modo", ["Deslizador", "Lado a lado"], default="Deslizador",
                                     key="galeria_cmp_modo", label_visibility="collapsed") or "Deslizador"
         vista = st.segmented_control("Vista", ["Original", "Procesada (IA)"], default="Procesada (IA)",
@@ -446,10 +348,13 @@ def foto_ampliada(registros, sel, extra=None):
             with st.container(horizontal=True, vertical_alignment="center", gap="small", key="galeria_extra",
                               width="content"):
                 extra()
-    ruta = _copia_reducida(r, "ruta_original" if vista == "Original" else "ruta_procesada")
+    # La misma copia de 1600 px que la ampliación del carrusel, servida tal cual: st.image la volvía a reducir
+    # y comprimir, y se veía más borrosa (sobre todo con la lupa)
+    url = _url_estatica(r, "ruta_original" if vista == "Original" else "ruta_procesada")
     with st.container(key="galeria_foto_grande"):
-        if ruta:
-            st.image(ruta, width="stretch")
+        if url:
+            st.markdown(f"<div class='foto-grande'><img src='{html.escape(url)}' alt='Captura de la laguna'></div>",
+                        unsafe_allow_html=True)
         else:
             st.warning("No se encuentra el archivo de esta imagen.")
     st.markdown(_metricas_foto(r), unsafe_allow_html=True)
@@ -460,17 +365,6 @@ def galeria_fotos(registros, periodo=None):
         else f"Fotos en vivo · últimas {len(registros)}"
     st.dialog(titulo, width="large", on_dismiss=_al_cerrar_galeria)(_galeria)(registros, periodo)
 
-def filtrar_por_dia(registros, dia):
-    """Devuelve (fotos de ese día o todas, {fecha: nº de capturas}, día elegido; None si ya no tiene fotos)."""
-    por_dia = {}
-    for r in registros:
-        fecha = _fecha_de(r)
-        if fecha:
-            por_dia[fecha.date()] = por_dia.get(fecha.date(), 0) + 1
-    if dia not in por_dia:
-        return registros, por_dia, None
-    return [r for r in registros if _fecha_de(r) and _fecha_de(r).date() == dia], por_dia, dia
-
 def selector_dia(por_dia, dia, total, clave_mes, al_elegir):
     """Un día concreto: menú con calendario (solo días con fotos) y, si hay uno elegido, volver a todos."""
     with st.popover(fecha_legible(dia, con_hora=False) if dia else f"Todos los días ({total})",
@@ -479,14 +373,6 @@ def selector_dia(por_dia, dia, total, clave_mes, al_elegir):
     if dia:
         st.button("", icon=":material/restart_alt:", key="galeria_dia_todos", on_click=al_elegir,
                   args=(None,), help="Restablecer: ver todos los días")
-
-def _poner_dia(dia):
-    """Otro día en la galería (None = todos): se vuelve a la primera página y lo marcado para comparar ya no vale."""
-    ss = st.session_state
-    ss.galeria_dia_v = dia
-    ss.galeria_pag = 0
-    ss.galeria_sel = None
-    _modo_comparar(ss.get("galeria_comparar", False))
 
 def foto_cuadricula(r, i, al_pulsar, args=(), orden=0):
     """Una foto de una cuadrícula con sus datos encima; un botón invisible la cubre para que toda sea clicable."""
@@ -500,12 +386,12 @@ def foto_cuadricula(r, i, al_pulsar, args=(), orden=0):
         st.button(f"Ver foto {i + 1}", key=f"galeria_abrir_{i}", on_click=al_pulsar, args=args)
 
 def _galeria(registros, periodo=None):
-    """Galería de las capturas (más recientes primero), 12 por página en tres columnas, con los datos
-    de cada foto encima; al pulsarla se abre en grande. Con un filtro de varios días se puede elegir
-    uno solo: desde ahí todo (cuadrícula, foto abierta y comparar) trabaja con las fotos de ese día."""
+    """Galería de las capturas (más recientes primero), 6 por página en tres columnas, con los datos
+    de cada foto encima; al pulsarla se abre en grande. Muestra justo lo del filtro de la gráfica
+    (o las últimas en vivo): para ver otros días se cambia ese filtro.
+    Al comparar se ven las mismas fotos y se tocan dos, una tras otra; para encontrarlas se puede ver
+    solo un día del filtro."""
     ss = st.session_state
-    todas = len(registros)
-    registros, por_dia, dia = filtrar_por_dia(registros, ss.get("galeria_dia_v"))
     total = len(registros)
     sel = ss.get("galeria_sel")
     if sel is not None and 0 <= sel < total:
@@ -517,21 +403,31 @@ def _galeria(registros, periodo=None):
         _comparacion(registros, elegidas)
         return
 
-    paginas = max(1, -(-total // FOTOS_POR_PAGINA))
+    visibles = list(range(total))
+    por_dia, dia = {}, None
+    if comparar:
+        for r in registros:
+            fecha = _fecha_de(r)
+            if fecha:
+                por_dia[fecha.date()] = por_dia.get(fecha.date(), 0) + 1
+        dia = ss.get("galeria_cmp_dia_v")
+        if dia in por_dia:
+            visibles = [i for i in visibles if _fecha_de(registros[i]) and _fecha_de(registros[i]).date() == dia]
+        else:
+            dia = None
+    paginas = max(1, -(-len(visibles) // FOTOS_POR_PAGINA))
     pag = min(ss.get("galeria_pag", 0), paginas - 1)
     with st.container(horizontal=True, vertical_alignment="center", gap="small", key="galeria_paginas"):
         if comparar:
-            st.markdown(f"<div class='gal-titulo'><span class='gal-chip comparar'><i></i>Comparar</span>"
-                        f"Elige las fechas o marca dos fotos abajo ({len(elegidas)}/2): la más antigua será «Antes»</div>",
-                        unsafe_allow_html=True)
+            st.markdown(_texto_comparar(registros, elegidas), unsafe_allow_html=True)
         else:
-            st.markdown(_texto_galeria(registros, periodo, dia), unsafe_allow_html=True)
+            st.markdown(_texto_galeria(registros, periodo), unsafe_allow_html=True)
         st.space("stretch")
-        if len(por_dia) > 1:
-            selector_dia(por_dia, dia, todas, "galeria_dia_mes", _poner_dia)
         if comparar:
+            if len(por_dia) > 1:
+                selector_dia(por_dia, dia, total, "galeria_cmp_dia_mes", _poner_dia_cmp)
             st.button("Cancelar", icon=":material/close:", key="galeria_cmp_cancelar", on_click=_modo_comparar,
-                      args=(False,), type="tertiary")
+                      args=(False,), type="tertiary", help="Volver a la galería")
         elif total >= 2:
             st.button("Comparar", icon=":material/compare:", key="galeria_cmp_activar", on_click=_modo_comparar,
                       args=(True,), type="tertiary", help="Elegir dos fotos y verlas antes / después")
@@ -545,23 +441,19 @@ def _galeria(registros, periodo=None):
                 st.button("", icon=":material/chevron_right:", key="galeria_pag_sig", disabled=pag == paginas - 1,
                           on_click=_ir_pagina, args=(pag + 1,), type="tertiary", help="Página siguiente")
 
-    if comparar and total < 2:
-        # P. ej. un día con una sola foto: el panel mostraría la misma en "Antes" y "Después"
-        st.markdown("<p class='cmp-sel-aviso'>Este día solo tiene una foto: elige otro día o vuelve a "
-                    "«Todos los días» (↺) para comparar.</p>", unsafe_allow_html=True)
-    elif comparar:
-        _panel_comparar(registros)
     inicio = pag * FOTOS_POR_PAGINA
-    pagina = registros[inicio:inicio + FOTOS_POR_PAGINA]
+    pagina = visibles[inicio:inicio + FOTOS_POR_PAGINA]
     # Solo esta zona se desplaza: el título y la paginación quedan fijos arriba
     with st.container(key="galeria_grilla"):
         for fila in range(0, len(pagina), COLUMNAS_GALERIA):
-            filas = enumerate(pagina[fila:fila + COLUMNAS_GALERIA], start=inicio + fila)
-            for col, (i, r) in zip(st.columns(COLUMNAS_GALERIA, gap="small"), filas):
-                # Al comparar, pulsar la marca en lugar de abrirla
-                orden = elegidas.index(i) + 1 if comparar and i in elegidas else 0
+            for col, i in zip(st.columns(COLUMNAS_GALERIA, gap="small"), pagina[fila:fila + COLUMNAS_GALERIA]):
+                # Al comparar, tocar una foto la marca (con su número) en lugar de abrirla
                 with col:
-                    foto_cuadricula(r, i, _pulsar_foto, (i,), orden)
+                    if comparar:
+                        orden = elegidas.index(i) + 1 if i in elegidas else 0
+                        foto_cuadricula(registros[i], i, _elegir_para_comparar, (i,), orden)
+                    else:
+                        foto_cuadricula(registros[i], i, _ir_foto, (i,))
 
 _ICONOS = {
     "prev": "<path d='m15 18-6-6 6-6'/>",
@@ -642,8 +534,10 @@ _PLANTILLA = """
     // Miniaturas: las capturas que vienen después de la actual (la actual no se repite abajo)
     const siguientes = [];
     for (let k = 1; k < Math.min(n, 5); k++) siguientes.push((vl.i + k) % n);
+    // Cada miniatura lleva su número (el mismo del contador 1/10); al pasar el ratón se ve en grande
     root.querySelector(".vl-thumbs").innerHTML = siguientes.map(j =>
-      `<button data-idx="${j}" title="${esc(datos[j].fecha)}"><img src="${esc(datos[j].p || datos[j].o)}" alt=""></button>`).join("");
+      `<button data-idx="${j}" aria-label="Captura ${j + 1}: ${esc(datos[j].fecha)}"><img src="${esc(datos[j].p || datos[j].o)}" alt="">` +
+      `<span class="vl-num">${j + 1}</span></button>`).join("");
     vl.transcurrido = 0;
     vl.pintarPausa();
   };
@@ -658,10 +552,44 @@ _PLANTILLA = """
 
   const ir = (j) => { vl.i = (j + datos.length) % datos.length; vl.render(); };
 
+  // ---- Vista previa al pasar el ratón por una miniatura: la foto en grande y sus datos en una ventanita
+  // flotante (la comparten todas las recargas, como la ampliada)
+  let vista = document.getElementById("vl-vista");
+  if (!vista) {
+    vista = document.createElement("div");
+    vista.id = "vl-vista";
+    document.body.appendChild(vista);
+  }
+  let esperaVista = null, miniatura = null;
+  const ocultarVista = () => { clearTimeout(esperaVista); miniatura = null; vista.classList.remove("visible"); };
+  const mostrarVista = (boton) => {
+    const j = +boton.dataset.idx, r = datos[j];
+    vista.innerHTML = `<img src="${esc(r[vl.modo] || r.o || r.p)}" alt="">` +
+      `<span class="vl-vista-num">${j + 1}/${datos.length}</span><div class="vl-vista-datos">${muestra(r)}</div>`;
+    // Centrada sobre la miniatura y sin salirse de la pantalla; si arriba no cabe, va debajo
+    const caja = boton.getBoundingClientRect(), ancho = vista.offsetWidth;
+    vista.style.left = `${Math.min(Math.max(8, caja.left + caja.width / 2 - ancho / 2), innerWidth - ancho - 8)}px`;
+    const alto = vista.offsetHeight;
+    vista.style.top = `${caja.top - alto - 10 >= 8 ? caja.top - alto - 10 : caja.bottom + 10}px`;
+    vista.classList.add("visible");
+  };
+  root.addEventListener("mouseover", (e) => {
+    const boton = e.target.closest("[data-idx]");
+    if (!boton || boton === miniatura) return;
+    clearTimeout(esperaVista);
+    miniatura = boton;
+    // Un instante de espera: pasar el ratón de largo no abre nada
+    esperaVista = setTimeout(() => mostrarVista(boton), 250);
+  });
+  root.addEventListener("mouseout", (e) => {
+    const boton = e.target.closest("[data-idx]");
+    if (boton && !boton.contains(e.relatedTarget)) ocultarVista();
+  });
+
   root.addEventListener("click", (e) => {
     const t = e.target.closest("[data-act], [data-modo], [data-idx]");
     if (!t) return;
-    if (t.dataset.idx !== undefined) ir(+t.dataset.idx);
+    if (t.dataset.idx !== undefined) { ocultarVista(); ir(+t.dataset.idx); }
     else if (t.dataset.modo) { vl.modo = t.dataset.modo; vl.render(); }
     else if (t.dataset.act === "prev") ir(vl.i - 1);
     else if (t.dataset.act === "next") ir(vl.i + 1);
@@ -698,7 +626,7 @@ _PLANTILLA = """
           <div class="vl-seg"><button data-modo="o">Original</button><button data-modo="p">Procesada (IA)</button></div>
           <button class="vl-btn" data-cerrar title="Cerrar"><i data-ico="cerrar"></i></button>
         </div>
-        <img alt="Captura ampliada">
+        <div class="lupa-marco"><img alt="Captura ampliada"></div>
         <div class="vl-met vl-met-modal"></div>
       </div>`;
     iconos(modal);
@@ -721,7 +649,7 @@ _PLANTILLA = """
   }
   vl.pintarModal = () => {
     const r = datos[vl.i];
-    modal.querySelector("img").src = r[vl.modoModal] || r.o || r.p;
+    modal.querySelector(".lupa-marco > img").src = r[vl.modoModal] || r.o || r.p;
     modal.querySelectorAll(".vl-seg button").forEach(b => b.classList.toggle("on", b.dataset.modo === vl.modoModal));
     modal.querySelector(".vl-met").innerHTML = muestra(r);
     modal.querySelector(".vl-modal-cont").textContent = `${vl.i + 1}/${datos.length}`;
@@ -729,7 +657,12 @@ _PLANTILLA = """
   // Navegar en la vista ampliada mueve también el carrusel de detrás, que queda en la misma foto al cerrar
   vl.mover = (paso) => { vl.i = (vl.i + paso + datos.length) % datos.length; vl.render(); vl.pintarModal(); };
   vl.abrir = () => { vl.modal = true; vl.modoModal = vl.modo; vl.pintarModal(); modal.classList.add("abierto"); };
-  vl.cerrar = () => { vl.modal = false; modal.classList.remove("abierto"); };
+  vl.cerrar = () => {
+    vl.modal = false;
+    modal.classList.remove("abierto");
+    // La próxima vez se abre con la foto entera (la lupa de app.py vuelve al tamaño normal con "load")
+    modal.querySelector(".lupa-marco > img").dispatchEvent(new Event("load"));
+  };
   if (previo && previo.modal) vl.abrir(); else vl.cerrar();
 
   vl.render();

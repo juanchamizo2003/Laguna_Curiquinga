@@ -179,6 +179,28 @@ def _cargar_modelo():
         _log("ERROR", f"No se pudo cargar el modelo SAM: {html.escape(str(e))}")
     return procesar_imagen
 
+def _motivo_calidad(ruta):
+    """Por qué no vale la foto antes de SAM (noche, quemada, sin contraste, desenfocada), o None si es apta.
+    procesar_imagen ya no descarta: como el vigilante, la carga manual decide antes de analizar."""
+    import cv2
+    from backend import config as cfg
+    from backend.calidad import revisar_imagen
+    img = cv2.imread(ruta)
+    if img is None:
+        return "No se pudo leer la imagen"
+    apta, motivo, _ = revisar_imagen(img, cfg.cargar()["calidad"])
+    return None if apta else motivo
+
+def _revisar_agua(registro):
+    """Después de SAM, como el vigilante: agua casi gris (niebla) deja el registro con su observación."""
+    from backend import config as cfg
+    from backend.calidad import revisar_agua
+    from backend.data_base import marcar_observacion
+    observacion = revisar_agua(registro["color_hex"], cfg.cargar()["calidad"])
+    if observacion:
+        marcar_observacion(registro["id"], observacion)
+    return observacion
+
 def _trabajar(tareas):
     procesar_imagen = None
     pendientes = [t["ruta"] for t in tareas if t["ruta"]]
@@ -204,6 +226,15 @@ def _trabajar(tareas):
                     _estado["ids"].append(guardado["id"])
                 _log("INFO", f"{prefijo} ya está almacenada en la base de datos ({formatear_m2(guardado['area'])}): "
                              "no se vuelve a analizar.")
+                continue
+            motivo = _motivo_calidad(ruta)
+            if motivo:
+                pendientes.remove(ruta)
+                _guardar_pendientes(pendientes)
+                _borrar(ruta)
+                with _cerrojo:
+                    _estado["resumen"]["descartada"] += 1
+                _log("AVISO", f"{prefijo} descartada y no guardada: {html.escape(motivo)}.")
                 continue
             if procesar_imagen is None:
                 procesar_imagen = _cargar_modelo()
@@ -234,12 +265,12 @@ def _trabajar(tareas):
                     _estado["duraciones"].append(time.time() - inicio)
             if r["resultado"] == "registrada":
                 _log("OK", f"{prefijo} · 100 % → {formatear_m2(r['registro']['area'])}")
+                observacion = _revisar_agua(r["registro"])
+                if observacion:
+                    _log("AVISO", f"{prefijo}: {html.escape(observacion)}. Se guardó marcada para revisar.")
                 if r.get("alertas"):
                     aviso = "" if r.get("notificada", True) else " Es una foto antigua: se guardó sin notificar."
                     _log("AVISO", f"{prefijo}: generó {len(r['alertas'])} alerta(s). Revisa la página Alertas.{aviso}")
-            elif r["resultado"] == "descartada":
-                _borrar(ruta)
-                _log("AVISO", f"{prefijo} · 100 % → descartada y no guardada: {html.escape(r['mensaje'])}")
             else:
                 _borrar(ruta)  # sin registro la foto no sirve de nada en la carpeta: se puede volver a subir
                 _log("ERROR", f"{prefijo} · error: {html.escape(str(r['mensaje']))}")

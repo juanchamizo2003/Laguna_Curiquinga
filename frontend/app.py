@@ -1,6 +1,7 @@
 import os
 import sys
 import html
+import base64
 from datetime import datetime
 import streamlit as st
 
@@ -14,10 +15,10 @@ from backend import acceso
 from backend import config as cfg
 from frontend.components import recordar
 from frontend.components.datos import registros
-from frontend.components.visor_laguna import boton_tema
+from frontend.components.visor_laguna import boton_tema, js_seguro
 
 st.set_page_config(
-    page_title="LC Visión", 
+    page_title=f"{cfg.SIGLA_APP} · {cfg.LAGUNA}",
     page_icon="frontend/logos/lcmini.png",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -25,7 +26,8 @@ st.set_page_config(
 
 # Estilos y tema claro/oscuro: Streamlit guarda el tema elegido en localStorage; el botón del encabezado lo cambia
 # y recarga para que también los componentes nativos (tablas, campos) lo tomen. data-tema activa las variables CSS.
-st.html("""
+# js_seguro: el script lleva HTML (el mapa de la lupa) y DOMPurify lo borraría entero
+st.html(js_seguro("""
 <style>
     :root {
         --bg: #0b0f14;
@@ -112,6 +114,15 @@ st.html("""
         display: flex; align-items: center; justify-content: center;
     }
     .brand-logo svg { width: 22px; height: 22px; }
+    /* El logo del proyecto (más ancho que alto y con su propio color) va sobre una tarjeta algo más clara que el
+       menú y con más brillo: sus líneas finas se perdían sobre el fondo oscuro */
+    .brand-logo.imagen {
+        box-sizing: border-box; width: 70px; height: 50px; padding: 4px 6px; border-radius: 12px;
+        background: var(--surface); border: 1px solid var(--border);
+    }
+    .brand-logo.imagen img { width: 100%; height: 100%; object-fit: contain; }
+    /* Más brillo solo en el tema oscuro: sobre la tarjeta clara el logo se veía desteñido */
+    :root:not([data-tema="claro"]) .brand-logo.imagen img { filter: brightness(1.35) saturate(1.25); }
     .brand-name { font-size: 18px; font-weight: 700; color: var(--text); line-height: 1.25; }
     .brand-sub { font-size: 13.5px; color: var(--muted); }
     .menu-label { font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px 16px; }
@@ -142,7 +153,12 @@ st.html("""
     .st-key-sb_estado { position: absolute !important; left: 16px; right: 16px; bottom: 76px; width: auto !important; }
     /* En ventanas bajas la tarjeta fija taparía el menú: pasa a ir debajo de él */
     @media (max-height: 720px) {
-        .st-key-sb_estado { position: static !important; margin: 18px 0 70px 0; }
+        .st-key-sb_estado { position: static !important; margin: 12px 0 70px 0; }
+        /* ...y el menú se compacta un poco: con "Cerrar sesión" (contraseña activa) la tarjeta quedaba debajo de
+           la barra de "Contraer" y el tema, que está fija abajo */
+        .brand { margin-bottom: 16px; }
+        [data-testid="stSidebar"] [data-testid="stRadioOption"] { padding-top: 10px !important; padding-bottom: 10px !important; }
+        .st-key-sb_salir { margin-top: 4px; }
     }
     .estado-card { border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px; background: var(--bg); }
     .estado-card b { display: flex; align-items: center; gap: 10px; font-size: 14.5px; color: var(--text); }
@@ -206,6 +222,22 @@ st.html("""
     [data-testid="stSidebar"][data-collapsed="true"] .tema-toggle i { background: transparent !important; width: 44px; height: 38px; }
     :root:not([data-tema="claro"]) [data-testid="stSidebar"][data-collapsed="true"] .tema-toggle .t-sol,
     :root[data-tema="claro"] [data-testid="stSidebar"][data-collapsed="true"] .tema-toggle .t-luna { display: none; }
+    /* Globos de ayuda de Streamlit (help= de botones y campos): no reciben el ratón. Si no, al pasar el cursor por
+       encima del globo este se quedaba abierto (y hasta se podía seleccionar su texto); así se cierra al salir del botón */
+    [data-baseweb="tooltip"], [data-baseweb="tooltip"] *, [data-testid="stTooltipContent"] {
+        pointer-events: none !important; user-select: none;
+    }
+    /* ...y si el botón se redibuja con el cursor encima (el carrusel en vivo, al abrir una ventana), Streamlit no se
+       entera de que el ratón salió y el globo quedaba abierto: el script del final pone esta clase cuando el cursor
+       no está sobre ningún botón con ayuda, o al hacer clic */
+    :root.sin-ayuda [data-baseweb="tooltip"], :root.sin-ayuda [data-testid="stTooltipContent"] { display: none !important; }
+    /* Barra de las tablas (ver columnas, descargar, buscar, pantalla completa): Streamlit la pone 44 px por encima de la
+       tabla y tapaba lo que hay justo arriba (p. ej. "Más recientes" en Registros). Va dentro, en la esquina de la
+       cabecera, a la izquierda de la barra de desplazamiento */
+    [data-testid="stElementContainer"]:has([data-testid="stDataFrame"]) > [data-testid="stElementToolbar"],
+    [data-testid="stElementContainer"]:has([data-testid="stDataFrame"]) [data-testid="stElementToolbar"] {
+        top: 2px !important; right: 14px !important; z-index: 3;
+    }
     /* Menú contraído: etiqueta con el nombre de cada icono al pasar el ratón (la crea el script del final) */
     .riel-tip {
         position: fixed; z-index: 1000100; left: 84px; transform: translateY(-50%); pointer-events: none; display: none;
@@ -421,9 +453,31 @@ st.html("""
     .vl-met b { font-size: 14.5px; color: var(--text); display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .vl-sw { width: 16px; height: 16px; border-radius: 5px; flex: none; border: 1px solid var(--sw-border); }
     .vl-thumbs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-    .vl-thumbs button { padding: 0; border: none; background: none; cursor: pointer; border-radius: 10px; overflow: hidden; }
+    .vl-thumbs button { position: relative; padding: 0; border: none; background: none; cursor: pointer; border-radius: 10px; overflow: hidden; }
     .vl-thumbs img { display: block; width: 100%; height: 58px; object-fit: cover; border-radius: 10px; opacity: .8; transition: opacity .15s; }
     .vl-thumbs button:hover img { opacity: 1; outline: 2px solid var(--accent); outline-offset: -2px; }
+    /* Número de cada miniatura, el mismo del contador 1/10 */
+    .vl-num {
+        position: absolute; top: 4px; left: 4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+        display: flex; align-items: center; justify-content: center; pointer-events: none;
+        font-size: 11px; font-weight: 700; color: #fff; background: rgba(5, 8, 11, .75);
+    }
+    /* Vista previa al pasar el ratón por una miniatura: la foto en grande y sus datos, sin tapar el panel */
+    #vl-vista {
+        position: fixed; z-index: 1000150; width: 340px; padding: 8px; border-radius: 14px; pointer-events: none;
+        background: var(--surface); border: 1px solid var(--border); box-shadow: 0 12px 32px rgba(0, 0, 0, .45);
+        opacity: 0; transform: translateY(6px); transition: opacity .15s, transform .15s; visibility: hidden;
+    }
+    #vl-vista.visible { opacity: 1; transform: none; visibility: visible; }
+    #vl-vista img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px; }
+    .vl-vista-num {
+        position: absolute; top: 14px; left: 14px; padding: 2px 9px; border-radius: 999px;
+        font-size: 12px; font-weight: 700; color: #fff; background: rgba(5, 8, 11, .75);
+    }
+    .vl-vista-datos { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; padding: 8px 4px 2px; }
+    .vl-vista-datos > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .vl-vista-datos span { font-size: 11.5px; color: var(--muted); }
+    .vl-vista-datos b { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
     #vl-modal {
         position: fixed; inset: 0; z-index: 1000200; background: rgba(5, 8, 11, .82); backdrop-filter: blur(3px);
         display: none; align-items: center; justify-content: center; padding: 24px;
@@ -437,7 +491,8 @@ st.html("""
     .vl-modal-nav { display: flex; align-items: center; gap: 6px; }
     .vl-modal-cab .vl-seg { flex: 1; max-width: 420px; }
     .vl-modal-cab .vl-btn { margin-left: auto; }
-    .vl-modal-caja > img { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 12px; background: var(--bg); }
+    .vl-modal-caja > .lupa-marco { border-radius: 12px; }
+    .vl-modal-caja > .lupa-marco > img { display: block; width: 100%; max-height: 70vh; object-fit: contain; background: var(--bg); }
     .vl-met-modal { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .vl-met-modal > div:nth-child(n) { grid-column: auto; border-top: none; border-left: 1px solid var(--border); }
     .vl-met-modal > div:first-child { border-left: none; }
@@ -513,14 +568,15 @@ st.html("""
     div[class*="st-key-galeria_gfoto_"] { position: relative; border-radius: 12px; overflow: hidden; }
     /* La cuadrícula se desplaza dentro de su caja */
     .st-key-galeria_grilla {
-        max-height: calc(100vh - 250px); overflow-y: auto; overflow-x: hidden; padding-right: 4px;
+        max-height: calc(100vh - 120px); overflow-y: auto; overflow-x: hidden; padding-right: 4px;
         scroll-snap-type: y mandatory;
     }
     /* Al desplazarse avanza fila a fila, sin dejar fotos cortadas */
     .st-key-galeria_grilla [data-testid="stHorizontalBlock"] { scroll-snap-align: start; }
-    /* Cada foto (16:9) se limita para que quepan 2 filas enteras en el alto de la cuadrícula */
+    /* Cada foto (16:9) usa todo el ancho de su columna salvo que así las 2 filas de la página no quepan en el alto
+       de la cuadrícula (100vh - 120px menos el hueco entre filas): entonces se limita para que se vean enteras */
     [data-testid="stLayoutWrapper"] > div.stVerticalBlock[class*="st-key-galeria_gfoto_"] {
-        width: min(100%, calc((100vh - 290px) / 2 * 16 / 9)) !important; margin: 0 auto;
+        width: min(100%, calc((100vh - 140px) / 2 * 16 / 9)) !important; margin: 0 auto;
     }
     div[class*="st-key-galeria_gfoto_"],
     div[class*="st-key-galeria_gfoto_"] [data-testid="stFullScreenFrame"],
@@ -585,25 +641,27 @@ st.html("""
         width: min(1200px, calc(100vw - 48px)) !important; margin: auto !important;
         background: var(--surface) !important; border: 1px solid var(--border); border-radius: 18px !important;
     }
-    [role="dialog"]:has(.st-key-galeria_barra) > h2 { display: none; }
-    [role="dialog"]:has(.st-key-galeria_barra) > div { padding: 16px !important; }
-    [role="dialog"]:has(.st-key-galeria_barra) > button {
+    /* La cuadrícula tampoco lleva título (el chip Filtro / En vivo ya lo dice): ese alto lo ganan las fotos */
+    [role="dialog"]:has(.st-key-galeria_barra) > h2, [role="dialog"]:has(.st-key-galeria_grilla) > h2 { display: none; }
+    [role="dialog"]:has(.st-key-galeria_barra) > div, [role="dialog"]:has(.st-key-galeria_grilla) > div { padding: 16px !important; }
+    [role="dialog"]:has(.st-key-galeria_barra) > button, [role="dialog"]:has(.st-key-galeria_grilla) > button {
         top: 16px !important; right: 16px !important; width: 40px; height: 40px; border-radius: 50%;
         border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; z-index: 2;
     }
-    [role="dialog"]:has(.st-key-galeria_barra) > button:hover { border-color: var(--accent); color: var(--accent); }
+    [role="dialog"]:has(.st-key-galeria_barra) > button:hover,
+    [role="dialog"]:has(.st-key-galeria_grilla) > button:hover { border-color: var(--accent); color: var(--accent); }
+    .st-key-galeria_paginas { padding-right: 52px; min-height: 40px; }
     /* ...y queda centrada en vertical entre el borde de arriba y el pie de página, que sigue visible */
-    [data-testid="stDialog"]:has(.st-key-galeria_grilla), [data-testid="stDialog"]:has(.st-key-galeria_barra) {
-        padding: 12px 0 44px !important;
-    }
-    /* Paginador de la cuadrícula en una cápsula: ‹ 1 / 3 › */
-    .st-key-galeria_pager {
+    [data-testid="stDialog"]:has(.st-key-galeria_barra) { padding: 12px 0 44px !important; }
+    [data-testid="stDialog"]:has(.st-key-galeria_grilla) { padding: 12px 0 !important; }
+    /* Paginador de la cuadrícula (y de cada lado al comparar) en una cápsula: ‹ 1 / 3 › */
+    div[class*="st-key-galeria_pager"] {
         border: 1px solid var(--border); border-radius: 999px; background: var(--surface); padding: 2px; flex: 0 0 auto;
     }
-    .st-key-galeria_pager button {
+    div[class*="st-key-galeria_pager"] button {
         width: 32px; height: 32px; min-height: 32px !important; padding: 0 !important; border-radius: 50% !important;
     }
-    .st-key-galeria_pager button:not(:disabled):hover { background: var(--accent-soft) !important; color: var(--accent) !important; }
+    div[class*="st-key-galeria_pager"] button:not(:disabled):hover { background: var(--accent-soft) !important; color: var(--accent) !important; }
     /* Foto abierta, igual que la ampliación del carrusel: ‹ 6/9 › y Original / Procesada arriba, la foto y sus datos */
     .st-key-galeria_barra { flex-wrap: nowrap !important; padding-right: 52px; }
     .st-key-galeria_extra { flex: 0 0 auto; flex-wrap: nowrap !important; }
@@ -613,13 +671,46 @@ st.html("""
         width: 40px; height: 40px; min-height: 40px !important; padding: 0 !important; border-radius: 50% !important;
     }
     .st-key-galeria_barra [data-testid="stElementContainer"]:has([data-testid="stButtonGroup"]) { max-width: 520px; }
-    .st-key-galeria_foto_grande [data-testid="stFullScreenFrame"],
-    .st-key-galeria_foto_grande [data-testid="stFullScreenFrame"] > div,
-    .st-key-galeria_foto_grande [data-testid="stImage"],
-    .st-key-galeria_foto_grande [data-testid="stImageContainer"] { width: 100% !important; }
-    .st-key-galeria_foto_grande [data-testid="stImage"] img {
-        display: block; width: 100% !important; aspect-ratio: 16 / 9; height: auto !important;
-        max-height: min(70vh, calc(100vh - 230px)); object-fit: contain; background: var(--bg); border-radius: 12px;
+    /* Foto abierta de la galería y de los resultados: la misma copia y la misma forma que la ampliación del carrusel */
+    [data-testid="stMarkdownContainer"]:has(> .foto-grande) { margin-bottom: 0 !important; }
+    .foto-grande { border-radius: 12px; }
+    .foto-grande > img {
+        display: block; width: 100%; aspect-ratio: 16 / 9; max-height: min(70vh, calc(100vh - 230px));
+        object-fit: contain; background: var(--bg);
+    }
+    /* Lupa de la foto ampliada (carrusel, galería y resultados), siempre activa: rueda o clic acercan donde está el
+       cursor, rueda abajo o clic derecho alejan y arrastrar mueve. Abajo a la derecha, el mapa de la foto completa
+       marca la zona vista */
+    .lupa-marco { position: relative; overflow: hidden; }
+    .lupa-marco > img { transform-origin: 0 0; transition: transform .2s ease; cursor: zoom-in; }
+    .lupa-marco.ampliada > img { cursor: grab; }
+    .lupa-marco.arrastrando > img { transition: none; cursor: grabbing !important; }
+    /* La ayuda sale al pasar el ratón por la foto, para no taparla todo el tiempo */
+    .lupa-ayuda {
+        position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 3;
+        padding: 4px 12px; border-radius: 999px; font-size: 12px; color: #fff; background: rgba(5, 8, 11, .7);
+        pointer-events: none; white-space: nowrap; opacity: 0; transition: opacity .2s;
+    }
+    .lupa-marco:hover > .lupa-ayuda { opacity: 1; }
+    /* Restablecer: arriba a la derecha y solo con la foto ampliada */
+    .lupa-restablecer {
+        position: absolute; top: 10px; right: 10px; z-index: 3; width: 38px; height: 38px; border-radius: 50%;
+        display: none; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+        color: #fff; background: rgba(5, 8, 11, .65); border: 1px solid rgba(255, 255, 255, .25);
+    }
+    .lupa-marco.ampliada > .lupa-restablecer { display: flex; }
+    .lupa-restablecer svg { width: 19px; height: 19px; }
+    .lupa-restablecer:hover { border-color: var(--accent); color: var(--accent); }
+    .lupa-mapa {
+        position: absolute; right: 10px; bottom: 10px; z-index: 3; width: 170px; display: none; pointer-events: none;
+        border-radius: 8px; overflow: hidden; background: #05080b; border: 1px solid rgba(255, 255, 255, .35);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+    }
+    .lupa-marco.ampliada > .lupa-mapa { display: block; }
+    .lupa-mapa img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .lupa-mapa i {
+        position: absolute; box-sizing: border-box; border: 2px solid var(--accent); background: rgba(60, 201, 180, .18);
+        transition: all .2s ease;
     }
     /* Comparar: las fotos elegidas llevan borde y su número (1 y 2) */
     .gal-chip.comparar { color: var(--accent); background: var(--accent-soft); }
@@ -663,28 +754,11 @@ st.html("""
     .cmp.lado { grid-template-columns: 1fr 1fr; gap: 8px; background: transparent; }
     .cmp.lado img { background: var(--bg); border-radius: 12px; }
     .cmp.lado .cmp-linea, .cmp.lado input { display: none; }
-    /* Comparar: una sola línea "Antes [día] [captura] → Después [día] [captura] [Comparar]" y atajos en texto */
-    .st-key-galeria_cmp_fechas { gap: 2px; padding: 2px 0 4px; }
-    .st-key-galeria_cmp_fila { flex-wrap: wrap !important; row-gap: 6px !important; }
-    .st-key-galeria_cmp_fila [data-testid="stPopoverButton"] button,
-    .st-key-galeria_cmp_fila [data-testid="stPopoverButton"] { min-height: 38px; white-space: nowrap; }
-    .cmp-lbl { font-size: 12.5px; font-weight: 700; color: var(--muted); }
-    .cmp-flecha { font-size: 16px; color: var(--muted); margin: 0 4px; }
-    .cmp-atajos-tit { font-size: 12.5px; color: var(--muted); margin-right: 4px; }
-    .st-key-galeria_cmp_atajos { flex-wrap: wrap !important; }
-    .st-key-galeria_cmp_atajos button { min-height: 26px !important; padding: 0 8px !important; }
-    .st-key-galeria_cmp_atajos button p { font-size: 12.5px !important; color: var(--accent); }
     .cmp-sel-aviso { margin: 0; font-size: 12px; color: var(--warn); }
     /* Carrusel sin fotos: el mismo aviso gris centrado que la gráfica */
     div[class*="_vlaguna_card"]:has(.graf-vacio) { justify-content: center; }
     .st-key-galeria_barra .st-key-galeria_cmp_volver button { white-space: nowrap; }
-    [data-testid="stMarkdownContainer"]:has(.cmp-lbl, .cmp-flecha, .cmp-atajos-tit, .cmp-sel-aviso) { margin-bottom: 0 !important; }
-    [data-testid="stElementContainer"]:has(.cmp-lbl, .cmp-flecha, .cmp-atajos-tit) { align-self: center; }
-    [data-testid="stMarkdownContainer"]:has(.cmp-lbl, .cmp-flecha, .cmp-atajos-tit) p { margin: 0; line-height: 1; }
-    [role="dialog"]:has(.st-key-galeria_cmp_fechas) .st-key-galeria_grilla { max-height: calc(100vh - 330px); }
-    [role="dialog"]:has(.st-key-galeria_cmp_fechas) [data-testid="stLayoutWrapper"] > div.stVerticalBlock[class*="st-key-galeria_gfoto_"] {
-        width: min(100%, calc((100vh - 370px) / 2 * 16 / 9)) !important;
-    }
+    [data-testid="stMarkdownContainer"]:has(.cmp-sel-aviso) { margin-bottom: 0 !important; }
     /* Calendario pequeño dentro del menú del día (galería y comparar): 7 columnas compactas, sin recuadros
        en los días; los que tienen capturas llevan el punto y el elegido va en el color de acento */
     [data-testid="stPopoverBody"]:has(div[class*="st-key-galeria_cmp_calendario_"]) { min-width: 296px; width: 296px; padding: 10px !important; }
@@ -837,6 +911,8 @@ st.html("""
         position: fixed; z-index: 1000300; display: none; flex-direction: column; gap: 6px; padding: 10px 12px;
         background: var(--tip-bg); border: 1px solid var(--tip-border); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25);
         font-size: 13px; color: var(--text);
+        /* No recibe el ratón: así no se queda abierto ni tapa los puntos de al lado */
+        pointer-events: none; user-select: none;
     }
     .tt-laguna.visible { display: flex; }
     .tt-laguna > div { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
@@ -1144,7 +1220,7 @@ st.html("""
     }
     if (el.matches('[data-testid="stExpandSidebarButton"]')) return "Expandir menú";
     if (el.matches(".estado-card")) return el.dataset.tip;
-    if (el.matches(".brand")) return "Curiquinga · Monitoreo lacustre";
+    if (el.matches(".brand")) return el.dataset.tip;
     // El nombre del icono también es texto ("home", "dns"…): se salta lo que usa la fuente de iconos
     const partes = [];
     const recorrido = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -1169,6 +1245,14 @@ st.html("""
     etiqueta.style.left = contraido ? "" : `${caja.right}px`;
     etiqueta.classList.add("visible");
   });
+
+  // Globos de ayuda de Streamlit: visibles solo con el cursor sobre un botón que tiene ayuda; un clic los oculta
+  // hasta volver a mover el ratón (ver la clase sin-ayuda en el CSS)
+  const raiz = document.documentElement;
+  document.addEventListener("pointermove", (e) => {
+    raiz.classList.toggle("sin-ayuda", !e.target.closest?.('[data-testid="stTooltipHoverTarget"], .stTooltipHoverTarget'));
+  }, { passive: true });
+  document.addEventListener("pointerdown", () => raiz.classList.add("sin-ayuda"), true);
 
   // Foto abierta en la galería: ← → pasan a la anterior / siguiente, como en la ampliación del carrusel
   document.addEventListener("keydown", (e) => {
@@ -1202,13 +1286,124 @@ st.html("""
   window.addEventListener("resize", programarAlto);
   document.addEventListener("click", (e) => { if (e.target.closest('[role="tab"]')) setTimeout(programarAlto, 80); });
 
+  // Lupa de la foto ampliada, siempre activa: la del carrusel (#vl-modal) y la de la galería y los resultados de
+  // la carga (.foto-grande). Streamlit cambia el <img> al pasar de foto: se prepara cada uno al aparecer.
+  const FOTOS_LUPA = '#vl-modal .lupa-marco > img, .st-key-galeria_foto_grande .foto-grande > img';
+  const MAX_LUPA = 8;
+  const prepararLupa = (img) => {
+    if (img.dataset.lupa) return;
+    img.dataset.lupa = "1";
+    const marco = img.parentElement;
+    marco.classList.add("lupa-marco");
+    marco.querySelectorAll(":scope > .lupa-ayuda, :scope > .lupa-mapa, :scope > .lupa-restablecer").forEach((e) => e.remove());
+    const ayuda = Object.assign(document.createElement("div"), {
+      className: "lupa-ayuda", textContent: "Rueda o clic: acercar · Clic derecho: alejar · Arrastrar: mover" });
+    const mapa = Object.assign(document.createElement("div"), { className: "lupa-mapa", innerHTML: '<img alt=""><i></i>' });
+    // Arriba a la derecha, solo con la foto ampliada: la deja de nuevo en su tamaño normal
+    const restablecer = Object.assign(document.createElement("button"), {
+      type: "button", className: "lupa-restablecer", title: "Volver al tamaño normal",
+      innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" ' +
+                 'stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>' });
+    marco.append(ayuda, mapa, restablecer);
+    const z = { s: 1, x: 0, y: 0 };
+
+    const pintar = () => {
+      img.style.transform = z.s > 1 ? `translate(${z.x}px, ${z.y}px) scale(${z.s})` : "";
+      marco.classList.toggle("ampliada", z.s > 1);
+      if (z.s <= 1) return;
+      const w = img.offsetWidth, h = img.offsetHeight;
+      const vistaMapa = mapa.querySelector("img");
+      if (vistaMapa.src !== (img.currentSrc || img.src)) vistaMapa.src = img.currentSrc || img.src;
+      mapa.style.aspectRatio = `${w} / ${h}`;
+      // El recuadro del mapa es la parte de la foto que cabe en el marco
+      Object.assign(mapa.querySelector("i").style, {
+        left: `${-z.x / z.s / w * 100}%`, top: `${-z.y / z.s / h * 100}%`,
+        width: `${100 / z.s}%`, height: `${100 / z.s}%` });
+    };
+    // Mantiene la foto cubriendo el marco: no se puede mover más allá de sus bordes
+    const ajustar = () => {
+      const w = img.offsetWidth, h = img.offsetHeight;
+      z.x = Math.min(0, Math.max(w - w * z.s, z.x));
+      z.y = Math.min(0, Math.max(h - h * z.s, z.y));
+    };
+    const reiniciar = () => { z.s = 1; z.x = z.y = 0; pintar(); };
+    // Acerca o aleja dejando quieto el punto de la foto que está bajo el cursor
+    const ampliar = (factor, e) => {
+      let nueva = Math.min(MAX_LUPA, Math.max(1, z.s * factor));
+      if (nueva < 1.05) nueva = 1;   // con pasos pequeños (rueda) no se quedaría en 1,0x por redondeo
+      if (nueva === z.s) return;
+      const caja = img.getBoundingClientRect();
+      const cx = e.clientX - (caja.left - z.x), cy = e.clientY - (caja.top - z.y);
+      const ux = (cx - z.x) / z.s, uy = (cy - z.y) / z.s;
+      z.s = nueva;
+      z.x = cx - ux * nueva;
+      z.y = cy - uy * nueva;
+      if (nueva === 1) z.x = z.y = 0;
+      ajustar();
+      pintar();
+    };
+    // Arrastrar mueve la zona ampliada; un arrastre no cuenta como clic (no acerca más)
+    // (solo se escucha la ventana mientras dura el arrastre)
+    img.addEventListener("mousedown", (e) => {
+      if (z.s <= 1 || e.button !== 0) return;
+      e.preventDefault();
+      const inicio = { x: e.clientX, y: e.clientY, zx: z.x, zy: z.y };
+      let movido = false;
+      const mover = (ev) => {
+        const dx = ev.clientX - inicio.x, dy = ev.clientY - inicio.y;
+        if (!movido && Math.hypot(dx, dy) < 4) return;
+        movido = true;
+        marco.classList.add("arrastrando");
+        z.x = inicio.zx + dx;
+        z.y = inicio.zy + dy;
+        ajustar();
+        pintar();
+      };
+      const soltar = () => {
+        window.removeEventListener("mousemove", mover);
+        window.removeEventListener("mouseup", soltar);
+        marco.classList.remove("arrastrando");
+        if (movido) img.dataset.recienArrastrada = "1";
+      };
+      window.addEventListener("mousemove", mover);
+      window.addEventListener("mouseup", soltar);
+    });
+    img.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (img.dataset.recienArrastrada) { delete img.dataset.recienArrastrada; return; }
+      ampliar(2, e);
+    });
+    img.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      ampliar(0.5, e);
+    });
+    img.addEventListener("dragstart", (e) => e.preventDefault());
+    // Rueda del ratón: arriba acerca y abajo aleja en el punto del cursor, a pasos más finos que el clic.
+    // Sobre la foto la rueda no desplaza la ventana (passive: false para poder evitarlo)
+    img.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      ampliar(e.deltaY < 0 ? 1.25 : 0.8, e);
+    }, { passive: false });
+    restablecer.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      reiniciar();
+    });
+    // Otra foto (flechas, Original / Procesada): vuelve a verse entera
+    img.addEventListener("load", reiniciar);
+  };
+  new MutationObserver(() => document.querySelectorAll(FOTOS_LUPA).forEach(prepararLupa))
+    .observe(document.body, { childList: true, subtree: true });
+  document.querySelectorAll(FOTOS_LUPA).forEach(prepararLupa);
+
   // Botón "Listo" de los menús emergentes: los cierra como lo haría la tecla Esc
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".pop-listo")) return;
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true }));
   });
 })();
-</script>""", unsafe_allow_javascript=True)
+</script>"""), unsafe_allow_javascript=True)
 
 inicializar_bd()
 
@@ -1226,10 +1421,10 @@ def _pantalla_acceso():
                 unsafe_allow_html=True)
     _, centro, _ = st.columns([1, 1.1, 1])
     with centro, st.container(key="acceso_card"):
-        st.markdown("""
+        st.markdown(f"""
             <div class="brand" style="margin-bottom:18px">
                 <div class="brand-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
-                <div><div class="brand-name">Curiquinga</div><div class="brand-sub">Monitoreo lacustre</div></div>
+                <div><div class="brand-name">{cfg.NOMBRE_APP}</div><div class="brand-sub">{cfg.LAGUNA}</div></div>
             </div>
         """, unsafe_allow_html=True)
         with st.form("form_acceso", border=False):
@@ -1270,17 +1465,19 @@ def _estado_servidor():
     ultima = max(datetime.strptime(r["fecha_subida"], "%Y-%m-%d %H:%M:%S") for r in regs)
     return "Vigilante detenido", "#f0616d", f"Último registro hace {_hace(datetime.now() - ultima)}"
 
-st.sidebar.markdown("""
-    <div class="brand">
-        <div class="brand-logo">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M7 16.3c2.2 0 4-1.83 4-4.05 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.76S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z"/>
-                <path d="M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97"/>
-            </svg>
-        </div>
+@st.cache_data
+def _logo_base64():
+    """El logo del proyecto embebido en el HTML del menú (st.markdown no puede leer archivos locales)."""
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logos", "lcmini.png")
+    with open(ruta, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+st.sidebar.markdown(f"""
+    <div class="brand" data-tip="{cfg.NOMBRE_APP} · {cfg.LAGUNA}">
+        <div class="brand-logo imagen"><img src="data:image/png;base64,{_logo_base64()}" alt="Logo"></div>
         <div>
-            <div class="brand-name">Curiquinga</div>
-            <div class="brand-sub">Monitoreo lacustre</div>
+            <div class="brand-name">{cfg.NOMBRE_APP}</div>
+            <div class="brand-sub">{cfg.LAGUNA}</div>
         </div>
     </div>
     <div class="menu-label">MENÚ</div>
@@ -1339,6 +1536,14 @@ if opcion == "inicio" and st.session_state.get("_pagina_previa") not in (None, "
     restablecer_filtro()
     st.session_state["vista_graficas"] = False
     st.session_state["grafica_ampliada"] = False
+# Al entrar o salir de Cargar y procesar, los filtros de Registros y Resultados visuales empiezan vacíos
+# (al recargar también: no se guardan en la dirección)
+previa = st.session_state.get("_pagina_previa")
+if previa is not None and previa != opcion and "cargar" in (previa, opcion):
+    from frontend.components.filtro_temporal import REGISTROS, VISUAL, restablecer_periodo
+    for prefijo in (REGISTROS, VISUAL):
+        restablecer_periodo(prefijo)
+    st.session_state["tabla_estados"] = []
 st.session_state["_pagina_previa"] = opcion
 if opcion != "inicio" and "vista" in st.query_params:
     del st.query_params["vista"]
@@ -1367,9 +1572,7 @@ recordar.sincronizar()
 
 # Pie de página con los créditos de Configuración → Acceso y créditos
 _pie = cfg.cargar()["pie"]
-_correo = html.escape(_pie["correo"])
 st.markdown(f"""<div class="pie-pagina">
-    <span>© {datetime.now().year} Monitoreo Laguna Curiquinga{' · ' + html.escape(_pie['institucion']) if _pie['institucion'] else ''}</span>
+    <span>© {datetime.now().year} {cfg.NOMBRE_APP} · {cfg.LAGUNA}{' · ' + html.escape(_pie['institucion']) if _pie['institucion'] else ''}</span>
     <span>Autor(es): <b>{html.escape(_pie['autores']) or 'sin definir'}</b></span>
-    <span>Contacto: {f'<a href="mailto:{_correo}">{_correo}</a>' if _correo else '<b>sin definir</b>'}</span>
 </div>""", unsafe_allow_html=True)

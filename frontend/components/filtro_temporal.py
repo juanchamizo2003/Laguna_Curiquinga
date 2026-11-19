@@ -7,9 +7,10 @@ import streamlit as st
 from frontend.components import recordar
 from frontend.components.formato import MESES_CORTOS, fecha_legible
 
-TIPOS = ["Días", "Meses", "Años"]               # filtro de la tabla de registros
+TIPOS = ["Días", "Meses", "Años"]               # filtro de la tabla de registros y de la galería de resultados
 TIPOS_GRAFICA = ["En vivo"] + TIPOS              # filtro de la gráfica del inicio
-VENTANAS_DIAS = (7, 14, 31)                      # 31: un mes completo cabe en la ventana
+VENTANAS_DIAS = (7, 14, 31)                      # atajos de la gráfica: últimos N días con datos
+MAX_DIAS_MARCADOS = 31                           # en el calendario se marcan los días a mano, hasta un mes completo
 N_EN_VIVO = 10                                   # capturas que muestra el modo en vivo
 SEGUNDOS_EN_VIVO = 30                            # cada cuánto se refresca la gráfica en vivo
 DIAS_SEMANA = ["L", "M", "X", "J", "V", "S", "D"]
@@ -17,16 +18,18 @@ MESES_LARGOS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", 
                 "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 ANIOS_POR_PAGINA = 12
 
-# El estado del filtro vive en claves globales; la tabla de registros usa las suyas con el prefijo REGISTROS,
-# para que filtrarla no cambie lo que muestra la gráfica del Inicio
+# El estado del filtro vive en claves globales; la tabla de registros y la galería de resultados usan las suyas
+# (prefijos REGISTROS y VISUAL), para que filtrar una no cambie lo que muestran las demás
 REGISTROS = "reg_"
+VISUAL = "vis_"
 CLAVE_POR_TIPO = {"Días": "fechas_seleccionadas", "Meses": "meses_seleccionados", "Años": "anios_seleccionados"}
 
 def _inicializar_estado():
     st.session_state.setdefault("tipo_seleccion", "En vivo")   # al abrir la app, la gráfica arranca en vivo
     st.session_state.setdefault("limite_dias", 7)
-    st.session_state.setdefault(REGISTROS + "tipo_seleccion", "Días")
-    for prefijo in ("", REGISTROS):
+    for prefijo in ("", REGISTROS, VISUAL):
+        if prefijo:
+            st.session_state.setdefault(prefijo + "tipo_seleccion", "Días")
         st.session_state.setdefault(prefijo + "fechas_seleccionadas", [])   # ["2026-04-26", ...]
         st.session_state.setdefault(prefijo + "meses_seleccionados", [])    # ["2026-04", ...]
         st.session_state.setdefault(prefijo + "anios_seleccionados", [])    # ["2026", ...]
@@ -41,19 +44,6 @@ def _texto_mes(clave):
     anio, mes = clave.split("-")
     return f"{MESES_CORTOS[int(mes) - 1]} {anio}"
 
-def _opciones(df, tipo):
-    """Valores disponibles en los datos para cada tipo de filtro (más recientes primero)."""
-    fechas = _fechas_de(df).dropna()
-    formato = {"Días": "%Y-%m-%d", "Meses": "%Y-%m", "Años": "%Y"}[tipo]
-    return sorted(fechas.dt.strftime(formato).unique(), reverse=True)
-
-def _formato_opcion(tipo):
-    if tipo == "Días":
-        return lambda v: fecha_legible(v, con_hora=False)
-    if tipo == "Meses":
-        return _texto_mes
-    return str
-
 def _copiar_a_global(key, clave_global, vacio):
     st.session_state[clave_global] = st.session_state[key] or vacio
 
@@ -65,19 +55,6 @@ def _selector_tipo(key_prefix, opciones=TIPOS, prefijo=""):
         on_change=_copiar_a_global, args=(key, prefijo + "tipo_seleccion", opciones[0])
     )
 
-def _multiselect_sincronizado(df, tipo, key_prefix, placeholder, prefijo=""):
-    """Multiselect de días/meses/años presentes en los datos, sincronizado con la clave global."""
-    clave_global = prefijo + CLAVE_POR_TIPO[tipo]
-    key = f"{key_prefix}_{clave_global}"
-    opciones = _opciones(df, tipo)
-    # Se descartan valores que ya no existen en los datos (si no, Streamlit lanza error)
-    st.session_state[key] = [v for v in st.session_state[clave_global] if v in opciones]
-    st.multiselect(
-        tipo, opciones, key=key, format_func=_formato_opcion(tipo),
-        placeholder=placeholder, label_visibility="collapsed",
-        on_change=_copiar_a_global, args=(key, clave_global, [])
-    )
-
 def restablecer_filtro():
     """Vuelve a En vivo y borra los días, meses y años marcados."""
     st.session_state.tipo_seleccion = "En vivo"
@@ -86,26 +63,28 @@ def restablecer_filtro():
         st.session_state[clave] = []
 
 def _fijar_limite(dias):
-    """Cambia la ventana 7/14/30; si hay más días marcados que el nuevo límite se quedan los más recientes."""
+    """Atajo 7/14/31: muestra los últimos N días con datos, así que se quitan los días marcados a mano."""
     st.session_state.limite_dias = dias
-    st.session_state.fechas_seleccionadas = sorted(st.session_state.fechas_seleccionadas, reverse=True)[:dias]
+    st.session_state.fechas_seleccionadas = []
 
 def en_vivo():
     _inicializar_estado()
     return st.session_state.tipo_seleccion == "En vivo"
 
-def aplicar_filtro_temporal(df, ventana_dias=True):
+def aplicar_filtro_temporal(df, ventana_dias=True, prefijo=None):
     """Filtra df según el estado del filtro. Devuelve (df_filtrado, descripción legible).
 
     ventana_dias=True (gráfica): "En vivo" toma las últimas N_EN_VIVO capturas y Días sin días marcados
-    toma los últimos 7/14/31 días con registros. La tabla pasa False y sin selección ve todo.
+    toma los últimos 7/14/31 días con registros. La tabla y la galería pasan False y sin selección ven todo.
+    prefijo: de quién es el filtro; por defecto el de la gráfica o, con ventana_dias=False, el de la tabla.
     """
     _inicializar_estado()
     fechas = _fechas_de(df)
     if fechas.dropna().empty:
         return df, "Sin muestras registradas"
 
-    prefijo = "" if ventana_dias else REGISTROS
+    if prefijo is None:
+        prefijo = "" if ventana_dias else REGISTROS
     tipo = st.session_state[prefijo + "tipo_seleccion"]
     if tipo == "En vivo":
         ultimas = fechas.dropna().sort_values().index[-N_EN_VIVO:]
@@ -117,7 +96,8 @@ def aplicar_filtro_temporal(df, ventana_dias=True):
         dias = st.session_state[prefijo + "fechas_seleccionadas"]
         if dias:
             mascara = fechas.dt.strftime("%Y-%m-%d").isin(dias)
-            descripcion = f"{len(dias)} día(s) marcado(s)"
+            descripcion = (fecha_legible(dias[0], con_hora=False) if len(dias) == 1
+                           else f"{len(dias)} día(s) marcado(s)")
         elif ventana_dias:
             # Últimos N días *con registros*: con capturas espaciadas una ventana de calendario
             # dejaría la gráfica casi vacía; con capturas diarias ambas cosas coinciden.
@@ -136,15 +116,17 @@ def aplicar_filtro_temporal(df, ventana_dias=True):
 
     return df[mascara.to_numpy()], descripcion
 
-def _resumen_seleccion(tipo):
+def _resumen_seleccion(tipo, prefijo=""):
+    """Texto del botón del calendario: lo elegido (un día, mes o año se nombra; varios, se cuentan)."""
+    elegidos = st.session_state[prefijo + CLAVE_POR_TIPO[tipo]]
+    n = len(elegidos)
+    if n == 1:
+        return {"Días": lambda v: fecha_legible(v, con_hora=False), "Meses": _texto_mes, "Años": str}[tipo](elegidos[0])
     if tipo == "Días":
-        n = len(st.session_state.fechas_seleccionadas)
-        return f"{n} de {st.session_state.limite_dias} días" if n else "Elegir días"
+        return f"{n} días marcados" if n else "Elegir días"
     if tipo == "Meses":
-        n = len(st.session_state.meses_seleccionados)
-        return f"{n} mes{'es' if n != 1 else ''}" if n else "Todos los meses"
-    n = len(st.session_state.anios_seleccionados)
-    return f"{n} año{'s' if n != 1 else ''}" if n else "Todos los años"
+        return f"{n} meses" if n else "Todos los meses"
+    return f"{n} años" if n else "Todos los años"
 
 def render_filtro_compacto(df, key_prefix="default"):
     """Fila de filtros de la gráfica: tipo, ventana de días, calendario y restablecer."""
@@ -158,12 +140,14 @@ def render_filtro_compacto(df, key_prefix="default"):
                         f"{SEGUNDOS_EN_VIVO} s</span>", unsafe_allow_html=True, width="content")
         else:
             if tipo == "Días":
+                # Con días marcados a mano ningún atajo queda resaltado: manda lo elegido en el calendario
+                manual = bool(st.session_state.fechas_seleccionadas)
                 for dias in VENTANAS_DIAS:
                     st.button(f"{dias} días", key=f"{key_prefix}_btn_{dias}d", on_click=_fijar_limite, args=(dias,),
-                              type="primary" if st.session_state.limite_dias == dias else "secondary")
+                              type="primary" if not manual and st.session_state.limite_dias == dias else "secondary")
             if st.button(_resumen_seleccion(tipo), icon=":material/calendar_month:", key=f"{key_prefix}_btn_cal",
                          help="Elegir en el calendario"):
-                _abrir_borrador(df)
+                _abrir_borrador(df, "")
                 _dialogo_periodo(df)
 
         st.button("", icon=":material/restart_alt:", key=f"{key_prefix}_btn_reset", help="Restablecer filtro",
@@ -185,13 +169,15 @@ def _sincronizar(clave_widget, clave_valor):
 def _preparar_widget(clave_widget, clave_valor):
     st.session_state[clave_widget] = st.session_state[clave_valor]
 
-def _abrir_borrador(df):
+def _abrir_borrador(df, prefijo=""):
+    """Copia al borrador el filtro de quien abre la ventana (prefijo: "" la gráfica, REGISTROS, VISUAL)."""
     ss = st.session_state
-    ss.cal_tipo_v = ss.tipo_seleccion if ss.tipo_seleccion in TIPOS else "Días"
-    ss.cal_limite_v = ss.limite_dias
-    ss.cal_dias = list(ss.fechas_seleccionadas)
-    ss.cal_meses = list(ss.meses_seleccionados)
-    ss.cal_anios = list(ss.anios_seleccionados)
+    ss.cal_prefijo = prefijo
+    tipo = ss[prefijo + "tipo_seleccion"]
+    ss.cal_tipo_v = tipo if tipo in TIPOS else "Días"
+    ss.cal_dias = list(ss[prefijo + "fechas_seleccionadas"])
+    ss.cal_meses = list(ss[prefijo + "meses_seleccionados"])
+    ss.cal_anios = list(ss[prefijo + "anios_seleccionados"])
     # La vista arranca en el último día marcado, o en la captura más reciente
     fechas = _fechas_de(df).dropna()
     referencia = (pd.Timestamp(max(ss.cal_dias)) if ss.cal_dias else
@@ -207,14 +193,9 @@ def _alternar(clave_lista, valor, limite=None):
         lista.remove(valor)
     elif limite and len(lista) >= limite:
         # Aviso dentro de la ventana: un st.toast lanzado desde aquí rompía la página
-        st.session_state.cal_aviso = f"Ya marcaste {limite} días. Desmarca uno o elige una ventana mayor."
+        st.session_state.cal_aviso = f"Ya marcaste {limite} días, el máximo. Desmarca uno para elegir otro."
     else:
         lista.append(valor)
-
-def _cambiar_limite():
-    """7/14/31: si hay más días marcados que la nueva ventana, se quedan los más recientes."""
-    _sincronizar("cal_limite", "cal_limite_v")
-    st.session_state.cal_dias = sorted(st.session_state.cal_dias, reverse=True)[:st.session_state.cal_limite_v]
 
 def _mover_mes(paso):
     ss = st.session_state
@@ -231,14 +212,16 @@ def _estado(valor, seleccion, con_datos):
 
 def _cuadricula_dias(con_datos, anios):
     ss = st.session_state
-    limite = ss.cal_limite_v
+    # Solo la gráfica limita los días (más de un mes de puntos no se lee); la tabla y la galería no
+    limite = MAX_DIAS_MARCADOS if ss.cal_prefijo == "" else None
     # El aviso ocupa el sitio de la ayuda: así nada se mueve cuando aparece
     aviso = ss.pop("cal_aviso", None)
     if aviso:
         st.markdown(f"<div class='cal-ayuda cal-aviso'>{aviso}</div>", unsafe_allow_html=True)
     else:
-        st.markdown(f"<div class='cal-ayuda'>Marca hasta <b>{limite} días</b>, en cualquier mes o año · "
-                    f"<b>{len(ss.cal_dias)}/{limite}</b> marcados</div>", unsafe_allow_html=True)
+        tope = f" (hasta {limite})" if limite else ""
+        st.markdown(f"<div class='cal-ayuda'>Marca los días con capturas que quieras ver{tope}, "
+                    f"en cualquier mes o año · <b>{len(ss.cal_dias)}</b> marcados</div>", unsafe_allow_html=True)
 
     with st.container(horizontal=True, vertical_alignment="center", gap="small", key="cal_nav"):
         st.button("", icon=":material/chevron_left:", key="cal_mes_ant", on_click=_mover_mes, args=(-1,))
@@ -298,11 +281,11 @@ def _cuadricula_anios(con_datos):
 
 def _aplicar_borrador(tipo):
     ss = st.session_state
-    ss.tipo_seleccion = tipo
-    ss.limite_dias = ss.cal_limite_v
-    ss.fechas_seleccionadas = sorted(ss.cal_dias)
-    ss.meses_seleccionados = sorted(ss.cal_meses)
-    ss.anios_seleccionados = sorted(ss.cal_anios)
+    prefijo = ss.cal_prefijo
+    ss[prefijo + "tipo_seleccion"] = tipo
+    ss[prefijo + "fechas_seleccionadas"] = sorted(ss.cal_dias)
+    ss[prefijo + "meses_seleccionados"] = sorted(ss.cal_meses)
+    ss[prefijo + "anios_seleccionados"] = sorted(ss.cal_anios)
 
 def _limpiar_borrador():
     clave = {"Días": "cal_dias", "Meses": "cal_meses", "Años": "cal_anios"}[st.session_state.cal_tipo_v]
@@ -312,19 +295,11 @@ def _limpiar_borrador():
 def _dialogo_periodo(df):
     ss = st.session_state
     fechas = _fechas_de(df).dropna()
-    # Tipo de periodo y, en Días, la ventana 7/14/31 en la misma fila para que la ventana quepa sin desplazarse
-    # En Meses y Años no hay ventana: el selector de tipo ocupa todo el ancho
+    # Los atajos 7/14/31 viven solo en la fila de la gráfica: aquí los días se marcan a mano
     tipo = ss.cal_tipo_v
-    c_tipo, c_ventana = st.columns(2, gap="small") if tipo == "Días" else (st.container(), None)
-    with c_tipo:
-        _preparar_widget("cal_tipo", "cal_tipo_v")
-        st.segmented_control("Tipo de periodo", TIPOS, key="cal_tipo", label_visibility="collapsed", width="stretch",
-                             on_change=_sincronizar, args=("cal_tipo", "cal_tipo_v"))
-    if c_ventana is not None:
-        with c_ventana:
-            _preparar_widget("cal_limite", "cal_limite_v")
-            st.segmented_control("Cantidad de días", VENTANAS_DIAS, key="cal_limite", format_func=lambda n: f"{n} días",
-                                 label_visibility="collapsed", on_change=_cambiar_limite, width="stretch")
+    _preparar_widget("cal_tipo", "cal_tipo_v")
+    st.segmented_control("Tipo de periodo", TIPOS, key="cal_tipo", label_visibility="collapsed", width="stretch",
+                         on_change=_sincronizar, args=("cal_tipo", "cal_tipo_v"))
 
     if tipo == "Días":
         anios = sorted(set(fechas.dt.year) | {date.today().year})
@@ -335,7 +310,8 @@ def _dialogo_periodo(df):
         _cuadricula_anios(set(fechas.dt.strftime("%Y")))
 
     st.markdown("<div class='cal-ayuda'><i class='cal-punto'></i> con capturas · sin marcar = "
-                + ("los últimos días con datos" if tipo == "Días" else "todo el historial") + "</div>",
+                + (f"los últimos {ss.limite_dias} días con datos" if tipo == "Días" and ss.cal_prefijo == ""
+                   else "todo el historial") + "</div>",
                 unsafe_allow_html=True)
     with st.container(horizontal=True, gap="small", key="cal_pie"):
         st.button("Limpiar", icon=":material/close:", key="cal_limpiar", width="stretch", on_click=_limpiar_borrador)
@@ -345,12 +321,27 @@ def _dialogo_periodo(df):
                      on_click=_aplicar_borrador, args=(tipo,)):
             st.rerun()
 
-def render_filtro_temporal(df, key_prefix="tabla"):
-    """Filtro amplio para la tabla: elegir días, meses o años presentes en los datos."""
+def restablecer_periodo(prefijo):
+    """Quita los días, meses y años elegidos: vuelve a verse todo."""
+    for clave in CLAVE_POR_TIPO.values():
+        st.session_state[prefijo + clave] = []
+
+def periodo_filtrado(prefijo):
+    """True si el filtro de periodo de la tabla o de la galería tiene algo elegido."""
     _inicializar_estado()
-    c1, c2 = st.columns([1, 3], gap="small", vertical_alignment="center")
-    with c1:
-        _selector_tipo(key_prefix, prefijo=REGISTROS)
-    with c2:
-        tipo = st.session_state[REGISTROS + "tipo_seleccion"]
-        _multiselect_sincronizado(df, tipo, key_prefix, f"Todos los {tipo.lower()}", prefijo=REGISTROS)
+    ss = st.session_state
+    return bool(ss[prefijo + CLAVE_POR_TIPO[ss[prefijo + "tipo_seleccion"]]])
+
+def render_filtro_periodo(df, prefijo, key_prefix):
+    """El filtro del Inicio para la tabla de registros y la galería de resultados: un botón con lo elegido que abre
+    la misma ventana (Días / Meses / Años, solo los que tienen capturas) y ↺ para quitarlo. Sin elegir nada se ve todo."""
+    ss = st.session_state
+    filtrado = periodo_filtrado(prefijo)
+    tipo = ss[prefijo + "tipo_seleccion"]
+    if st.button(_resumen_seleccion(tipo, prefijo) if filtrado else "Elegir periodo", icon=":material/calendar_month:",
+                 key=f"{key_prefix}_btn_cal", type="primary" if filtrado else "secondary",
+                 help="Filtrar por días, meses o años con capturas"):
+        _abrir_borrador(df, prefijo)
+        _dialogo_periodo(df)
+    st.button("", icon=":material/restart_alt:", key=f"{key_prefix}_btn_reset", type="tertiary",
+              help="Restablecer filtro: ver todo", disabled=not filtrado, on_click=restablecer_periodo, args=(prefijo,))
