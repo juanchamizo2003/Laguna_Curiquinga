@@ -342,14 +342,12 @@ def _tab_acceso(config):
                     st.error("La contraseña no es correcta.")
 
     pie = config["pie"]
-    with col_pie, _tarjeta("cfg_pie_card", "Pie de página", "Autores y contacto que se muestran al final de cada página"):
+    with col_pie, _tarjeta("cfg_pie_card", "Pie de página", "Autores e institución que se muestran al final de cada página"):
         with st.form("form_pie", border=False):
-            autores = st.text_input("Autor(es)", value=pie["autores"], placeholder="Nombre Apellido, Nombre Apellido")
-            correo = st.text_input("Correo de contacto", value=pie["correo"], placeholder="correo@institucion.edu.co")
+            autores = st.text_input("Autor(es)", value=pie["autores"], placeholder="Nombre Apellido y Nombre Apellido")
             institucion = st.text_input("Institución (opcional)", value=pie["institucion"])
             if st.form_submit_button("Guardar", type="primary", icon=":material/save:"):
-                cfg.actualizar("pie", {"autores": autores.strip(), "correo": correo.strip(),
-                                       "institucion": institucion.strip()})
+                cfg.actualizar("pie", {"autores": autores.strip(), "institucion": institucion.strip()})
                 _guardado("Pie de página guardado")
 
 def render_configuracion():

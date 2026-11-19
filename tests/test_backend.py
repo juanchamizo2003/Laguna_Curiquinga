@@ -215,10 +215,12 @@ def test_procesar_imagen_con_analizador_falso(bd_temporal, tmp_path, monkeypatch
     assert r["registro"]["fecha_captura"] == "2026-04-26 13:24:36"
     assert (tmp_path / "mini" / "trazo_Curiquinga_20260426_132436M.jpg").exists()
 
-def test_agua_sin_color_se_descarta_sin_guardar(bd_temporal, tmp_path, monkeypatch):
-    """Niebla sobre la laguna: el área no sirve, así que no se guarda registro ni trazo."""
+def test_carga_manual_marca_el_agua_sin_color(bd_temporal, tmp_path, monkeypatch):
+    """Niebla sobre la laguna: procesar_imagen la registra y la carga manual, como el vigilante, le deja
+    la observación para que se revise."""
     import cv2
     from backend import procesamiento
+    from frontend.components import lote_fondo
     monkeypatch.setattr(procesamiento, "DIR_PROCESADAS", str(tmp_path / "proc"))
     ruta = tmp_path / "Curiquinga_20260426_132436M.jpg"
     cv2.imwrite(str(ruta), _imagen_textura())
@@ -228,9 +230,9 @@ def test_agua_sin_color_se_descarta_sin_guardar(bd_temporal, tmp_path, monkeypat
                             "img_visual": np.zeros((1080, 1920, 3), np.uint8)}
 
     r = procesar_imagen(str(ruta), "Manual", evaluar_alertas=False, analizar=gris)
-    assert r["resultado"] == "descartada" and r["mensaje"]
-    assert data_base.obtener_registros() == []
-    assert not (tmp_path / "proc").exists()
+    assert r["resultado"] == "registrada"
+    assert lote_fondo._revisar_agua(r["registro"])
+    assert data_base.obtener_registro(r["registro"]["id"])["observacion"]
 
 @pytest.mark.parametrize("nombre, avisa", [
     (f"Curiquinga_{datetime.now():%Y%m%d_%H%M%S}M.jpg", True),   # de ahora: es una alerta real
@@ -265,12 +267,36 @@ def test_cancelar_interrumpe_el_analisis_de_sam():
     motor.liberar_modelo()                        # al terminar el lote se limpia
     motor._revisar_cancelacion(None, None)
 
-def test_procesar_imagen_oscura_no_llama_a_sam(bd_temporal, tmp_path):
+def test_carga_manual_descarta_la_foto_oscura_antes_de_sam(bd_temporal, tmp_path):
+    """procesar_imagen ya no descarta: la carga manual revisa la calidad antes de llamar a SAM."""
     import cv2
-    ruta = tmp_path / "noche.jpg"
-    cv2.imwrite(str(ruta), _imagen_textura(brillo=8, amplitud=4))
-    r = procesar_imagen(str(ruta), "Automático", analizar=lambda *a: pytest.fail("no debía llamar a SAM"))
-    assert r["resultado"] == "descartada"
+    from frontend.components import lote_fondo
+    oscura, buena = tmp_path / "noche.jpg", tmp_path / "dia.jpg"
+    cv2.imwrite(str(oscura), _imagen_textura(brillo=8, amplitud=4))
+    cv2.imwrite(str(buena), _imagen_textura())
+    assert lote_fondo._motivo_calidad(str(oscura))
+    assert lote_fondo._motivo_calidad(str(buena)) is None
+
+def test_lote_manual_no_analiza_la_foto_oscura(bd_temporal, tmp_path, monkeypatch):
+    """Un lote con una foto de noche y una buena: la oscura se descarta y se borra sin pasar por SAM."""
+    import cv2
+    from frontend.components import lote_fondo
+    monkeypatch.setattr(lote_fondo, "RUTA_PENDIENTES", str(tmp_path / "pendientes.json"))
+    oscura, buena = tmp_path / "noche.jpg", tmp_path / "dia.jpg"
+    cv2.imwrite(str(oscura), _imagen_textura(brillo=8, amplitud=4))
+    cv2.imwrite(str(buena), _imagen_textura())
+    analizadas = []
+
+    def falso(ruta, origen):
+        analizadas.append(ruta)
+        return {"resultado": "error", "mensaje": "sin SAM en la prueba"}
+
+    monkeypatch.setattr(lote_fondo, "_cargar_modelo", lambda: falso)
+    lote_fondo._estado.update(activo=True, resumen={"registrada": 0, "descartada": 0, "error": 0}, logs=[])
+    lote_fondo._trabajar([{"nombre": p.name, "ruta": str(p), "guardado": None, "motivo": ""} for p in (oscura, buena)])
+    assert analizadas == [str(buena)]
+    assert lote_fondo.estado()["resumen"]["descartada"] == 1
+    assert not oscura.exists()
 
 # ---------------------------------------------------------------- sincronización con la cámara
 
@@ -295,7 +321,7 @@ def test_origen_no_reimporta_lo_ya_traido(bd_temporal, tmp_path, monkeypatch):
     vigilante.sincronizar_origen(str(origen))
     assert not (ingesta / foto.name).exists()
 
-def test_descarte_borra_la_foto_y_no_la_reimporta(bd_temporal, tmp_path, monkeypatch):
+def test_descarte_mueve_la_foto_al_historial_y_no_la_reimporta(bd_temporal, tmp_path, monkeypatch):
     import vigilante
     ingesta, descartes = tmp_path / "ingesta", tmp_path / "descartes"
     ingesta.mkdir(); descartes.mkdir()
@@ -307,7 +333,9 @@ def test_descarte_borra_la_foto_y_no_la_reimporta(bd_temporal, tmp_path, monkeyp
     foto.write_bytes(b"x")
 
     vigilante.descartar(str(foto), "Imagen demasiado oscura")
-    assert not foto.exists() and list(descartes.iterdir()) == [descartes / "_motivos.jsonl"]
+    # Se mueve al historial de descartes (no se borra) y su motivo queda anotado
+    assert not foto.exists() and (descartes / f"descarte_{foto.name}").exists()
+    assert (descartes / "_motivos.jsonl").exists()
     assert foto.name in vigilante._ya_conocidas()
 
 def test_eliminar_registro_borra_sus_alertas(bd_temporal):

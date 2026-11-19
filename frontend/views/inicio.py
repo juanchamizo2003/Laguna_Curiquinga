@@ -266,6 +266,13 @@ def _datos_de_modo(modo):
         df = df[df["estado"].str.contains(modo, na=False)].reset_index(drop=True)
     return df
 
+def _aviso_filtro(subtitulo):
+    """Etiqueta "Filtro activo" solo si de verdad se filtra: no en vivo ni con Meses / Años sin elegir nada,
+    que muestran todo el historial."""
+    if en_vivo() or subtitulo == "Todo el historial":
+        return ""
+    return "<span class='filtro-badge'>Filtro activo</span> "
+
 def _seguir_en_vivo(vivo):
     """Tras cambiar el filtro dentro del fragmento se relanza toda la página: el refresco en vivo se fija al
     crear el fragmento, y el reporte PDF de Exportar debe ver el mismo periodo que la gráfica."""
@@ -305,7 +312,7 @@ def render_vista_graficas(modo, key_prefix, vivo=False):
         _seguir_en_vivo(vivo)
         df_periodo, subtitulo = aplicar_filtro_temporal(df_datos)
         df_grafica = solo_confiables(df_periodo)
-        aviso = "" if en_vivo() else "<span class='filtro-badge'>Filtro activo</span> "
+        aviso = _aviso_filtro(subtitulo)
         titulo.markdown(f"""
             <div class='card-title'>Mismos datos de la gráfica principal</div>
             <div class='card-sub card-sub-ellipsis'>{aviso}{subtitulo} · {len(df_grafica)} captura(s) · arrastra ≡ para ordenar</div>
@@ -345,7 +352,7 @@ def _columna_principal(modo, key_prefix, vivo=False):
         df_periodo, subtitulo = aplicar_filtro_temporal(df_datos)
         df_grafica = solo_confiables(df_periodo)
         # Con un filtro de fechas la gráfica no muestra lo último: se avisa con una etiqueta
-        aviso = "" if en_vivo() else "<span class='filtro-badge'>Filtro activo</span> "
+        aviso = _aviso_filtro(subtitulo)
         titulo.markdown(f"""
             <div class='card-title'>Área superficial de la laguna</div>
             <div class='card-sub card-sub-ellipsis'>{aviso}Mediciones confiables · {subtitulo} · {len(df_grafica)} captura(s)</div>

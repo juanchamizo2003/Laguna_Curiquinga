@@ -1,4 +1,5 @@
 import os
+import html
 import pandas as pd
 import streamlit as st
 
@@ -6,7 +7,8 @@ from backend.data_base import obtener_registro, eliminar_registro
 from backend.miniaturas import ruta_miniatura
 from frontend.components import recordar
 from frontend.components.datos import df_registros, refrescar
-from frontend.components.filtro_temporal import render_filtro_temporal, aplicar_filtro_temporal
+from frontend.components.filtro_temporal import (REGISTROS, render_filtro_periodo, aplicar_filtro_temporal,
+                                                 periodo_filtrado)
 from frontend.components.visor_laguna import borrar_copias
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -67,10 +69,12 @@ def render_tabla_registros():
         titulo = st.empty()
 
         with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-            recordar.widget("chk_filtrado_tabla", (True, False))
-            modo_filtrado = st.toggle("Filtrar por fecha", key="chk_filtrado_tabla")
+            # El mismo filtro de periodo que la gráfica del Inicio, con su propio estado
+            render_filtro_periodo(df, REGISTROS, "tabla")
             opciones_estado = sorted(df["validacion"].unique())
-            recordar.widget("tabla_estados", opciones_estado)
+            # Un estado que ya no está en los datos se quita (si no, Streamlit lanza error)
+            st.session_state["tabla_estados"] = [e for e in st.session_state.get("tabla_estados", [])
+                                                 if e in opciones_estado]
             estados = st.multiselect("Estado", opciones_estado, key="tabla_estados",
                                      placeholder="Todos los estados", label_visibility="collapsed", width=260)
             st.space("stretch")
@@ -78,11 +82,11 @@ def render_tabla_registros():
             criterio_orden = st.selectbox("Ordenar por", list(ORDENES), key="tabla_orden",
                                           label_visibility="collapsed", width=180)
 
-        if modo_filtrado:
-            render_filtro_temporal(df)
-            df, _ = aplicar_filtro_temporal(df, ventana_dias=False)
+        df, periodo = aplicar_filtro_temporal(df, ventana_dias=False, prefijo=REGISTROS)
+        filtros = [periodo] if periodo_filtrado(REGISTROS) else []
         if estados:
             df = df[df["validacion"].isin(estados)]
+            filtros.append(", ".join(estados))
 
         df_final = pd.DataFrame({
             "ID": df["id"],
@@ -99,9 +103,12 @@ def render_tabla_registros():
         columnas, ascendente = ORDENES[criterio_orden]
         df_final = df_final.sort_values(columnas, ascending=ascendente, na_position="last").reset_index(drop=True)
 
+        # Con filtro, la etiqueta naranja del Inicio y qué se filtra: así no se confunde con todos los registros
+        aviso = (f"<span class='filtro-badge'>Filtro activo</span> {html.escape(' · '.join(filtros))} · "
+                 if filtros else "")
         titulo.markdown(f"""
             <div class='card-title'>Base de datos de capturas</div>
-            <div class='card-sub'>{len(df_final)} de {total} registros · selecciona filas para eliminarlas</div>
+            <div class='card-sub'>{aviso}{len(df_final)} de {total} registros · selecciona filas para eliminarlas</div>
         """, unsafe_allow_html=True)
 
         evento = st.dataframe(

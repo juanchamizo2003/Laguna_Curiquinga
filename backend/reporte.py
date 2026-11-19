@@ -37,7 +37,7 @@ class _PDF(FPDF):
         self.set_y(-12)
         self.set_font("helvetica", size=8)
         self.set_text_color(*SUAVE)
-        self.cell(0, 6, _t(f"Laguna Curiquinga · Monitoreo lacustre · Página {self.page_no()}/{{nb}}"), align="C")
+        self.cell(0, 6, _t(f"{cfg.NOMBRE_APP} · {cfg.LAGUNA} · Página {self.page_no()}/{{nb}}"), align="C")
 
 def _titulo_seccion(pdf, texto):
     pdf.ln(4)

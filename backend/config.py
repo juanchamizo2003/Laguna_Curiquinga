@@ -22,6 +22,14 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUTA_CONFIG = os.path.join(BASE_DIR, "base_datos", "config.json")
 
 # ==========================================
+# NOMBRE DE LA PLATAFORMA
+# ==========================================
+# La plataforma (ML = Monitoreo Laguna) no cambia; la laguna sí, cuando se sigan otras
+NOMBRE_APP = "Monitoreo Laguna"
+SIGLA_APP = "ML"
+LAGUNA = "Curiquinga"
+
+# ==========================================
 # DICCIONARIO BASE (VALORES DE FÁBRICA)
 # ==========================================
 POR_DEFECTO = {
@@ -74,9 +82,8 @@ POR_DEFECTO = {
         "clave_hash": "",             # Vacío = panel Streamlit sin contraseña
     },
     "pie": {                          
-        "autores": "Ana Pérez, Luis Gómez",
-        "correo": "contacto@ejemplo.com",
-        "institucion": "Universidad de ejemplo",
+        "autores": "Juan Diego Chamizo y Yeison Acosta",
+        "institucion": "Fundación Universitaria de Popayán",
     },
     "grafica": {                      
         "tipo": "Puntos",

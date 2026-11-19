@@ -34,19 +34,8 @@ def _ventana(t):
     return int(t) if t in ("7", "14", "31") else None
 
 
-def _si(t):
-    return True if t == "1" else None
-
-
 def _lista(patron=None):
     return lambda t: [v for v in t.split(",") if v and (patron is None or re.fullmatch(patron, v))]
-
-
-def _fecha(t):
-    try:
-        return date.fromisoformat(t)
-    except ValueError:
-        return None
 
 
 _PERIODOS = ("Días", "Meses", "Años")
@@ -60,19 +49,12 @@ _ESTADO = {
     "fechas_seleccionadas": ("dias", [], _lista(_DIA)),
     "meses_seleccionados": ("meses", [], _lista(_MES)),
     "anios_seleccionados": ("anios", [], _lista(_ANIO)),
-    # Cargar y procesar · Registros
-    "reg_tipo_seleccion": ("reg_periodo", "Días", _opcion(*_PERIODOS)),
-    "reg_fechas_seleccionadas": ("reg_dias", [], _lista(_DIA)),
-    "reg_meses_seleccionados": ("reg_meses", [], _lista(_MES)),
-    "reg_anios_seleccionados": ("reg_anios", [], _lista(_ANIO)),
-    # Cargar y procesar · Resultados visuales
-    "visual_dia_v": ("fotos_dia", None, _fecha),
+    # Cargar y procesar · Resultados visuales. Los filtros de Registros y Resultados no van aquí: al recargar o
+    # cambiar de módulo empiezan vacíos (ver app.py), para no tomar unos datos filtrados por todos
     "visual_pag": ("fotos_pag", 0, _entero),
 }
 _WIDGETS = {
     "inicio_modo": ("origen", "Ambos", _texto),
-    "chk_filtrado_tabla": ("reg_filtro", False, _si),
-    "tabla_estados": ("reg_estados", [], _lista()),
     "tabla_orden": ("reg_orden", "Más recientes", _texto),
     "alertas_filtro": ("alertas", "Todas", _texto),
     "srv_filtro_log": ("registro", "Todo", _texto),
