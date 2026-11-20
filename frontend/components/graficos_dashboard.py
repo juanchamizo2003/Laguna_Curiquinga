@@ -19,6 +19,8 @@ SERIES_AREA = [
 TIPOS_GRAFICO = ["Puntos", "Línea", "Área", "Barras", "Escalones", "Tallos"]
 VENTANA_TENDENCIA = 5   # días con datos que promedia la tendencia
 MAX_ETIQUETAS_X = 8
+TITULO_EJE_X = "Fecha de captura"
+TITULO_EJE_Y = "Área superficial (m²)"
 
 # Las trazas con meta=TOOLTIP las dibuja el tooltip propio de tooltip_grafica.py (con iconos y color)
 TOOLTIP = "laguna"
@@ -72,12 +74,44 @@ PALETAS_EJES = {
     "light": {"eje": "#9aa5b1", "rejilla": "rgba(23, 33, 44, 0.08)", "texto": "#5e6a78"},
 }
 
-def _paleta_ejes():
+def tema_actual():
+    """'dark' o 'light', según el tema que tiene activo el navegador."""
     try:
         tema = st.context.theme.type
     except Exception:
         tema = None
-    return PALETAS_EJES.get(tema or "dark", PALETAS_EJES["dark"])
+    return tema if tema in PALETAS_EJES else "dark"
+
+def _paleta_ejes():
+    return PALETAS_EJES[tema_actual()]
+
+# Fondo y textos de la gráfica interactiva descargada (los mismos de las tarjetas del panel)
+FONDOS_HTML = {"dark": ("#12171e", "#e8edf2", "#8b95a3"), "light": ("#ffffff", "#17212c", "#5e6a78")}
+
+def html_interactivo(fig, titulo, subtitulo, tema="dark"):
+    """La gráfica como página HTML independiente (se abre en cualquier navegador, sin la app ni internet):
+    al pasar el cursor por cada punto muestra su fecha, área, color, confianza y alerta, con cualquier
+    cantidad de capturas; además acerca con la rueda y se mueve arrastrando. Devuelve los bytes del archivo."""
+    fondo, texto, suave = FONDOS_HTML.get(tema, FONDOS_HTML["dark"])
+    fig = go.Figure(fig)
+    # En el panel esos datos los dibuja el tooltip propio (JavaScript de la app); aquí, el de Plotly
+    fig.update_traces(selector=dict(meta=TOOLTIP), hoverinfo="all", hovertemplate=(
+        "<b>%{customdata[0]}</b><br>Área: %{customdata[1]}<br>Color: %{customdata[2]}<br>"
+        "Confianza: %{customdata[3]}<br><span style='color:#f0616d'>%{customdata[4]}</span><extra></extra>"))
+    fig.update_layout(
+        title=dict(text=f"<b>{titulo}</b><br><span style='font-size:13px;color:{suave}'>{subtitulo}</span>",
+                   x=0.01, xanchor="left", font=dict(size=19, color=texto)),
+        paper_bgcolor=fondo, plot_bgcolor=fondo, dragmode="pan", hovermode="closest",
+        margin=dict(l=96, r=24, t=86), font=dict(family="Inter, Segoe UI, sans-serif"),
+    )
+    # Plotly no siempre ensancha el margen solo al abrir el archivo: sitio fijo para las cifras y el título del eje Y
+    fig.update_yaxes(automargin=True, title_standoff=14)
+    pagina = fig.to_html(include_plotlyjs=True, full_html=True, default_height="94vh",
+                         config={"scrollZoom": True, "displaylogo": False, "responsive": True,
+                                 "modeBarButtonsToRemove": ["select2d", "lasso2d"]})
+    pagina = pagina.replace("<head>", f"<head><title>{titulo}</title>"
+                            f"<style>body{{margin:0;background:{fondo}}}</style>", 1)
+    return pagina.encode("utf-8")
 
 def estilo_base(fig, leyenda=True, hover="closest", ejes=True):
     """Estilo común: ejes X e Y como en un plano cartesiano y rejilla horizontal suave.
@@ -172,9 +206,14 @@ def fig_area(df, tipo="Puntos", colores=None, tendencia=False, compacta=False, u
     _marcar_alertas(fig, df, umbral, alertas, colores.get("Alerta", COLOR_ALERTA))
     _eje_x_por_dias(fig, df, 4 if compacta else MAX_ETIQUETAS_X)
     estilo_base(fig, leyenda=not compacta)
-    fig.update_xaxes(tickangle=0)
-    # El eje Y arranca exactamente en 0: así la línea del eje X queda sobre el cero, como en un plano cartesiano
+    titulo_eje = dict(color=_paleta_ejes()["texto"], size=12 if compacta else 13)
+    fig.update_xaxes(tickangle=0, title=dict(text=TITULO_EJE_X, font=titulo_eje, standoff=14 if compacta else 8))
+    # El eje Y arranca exactamente en 0: así la línea del eje X queda sobre el cero, como en un plano cartesiano.
+    # Miles con punto (100.000) en vez de "100k": junto al título del eje se lee como m² sin ambigüedad
     tope = max(float(df["area"].max()), float(umbral or 0))
-    fig.update_yaxes(range=[0, tope * 1.12], autorange=False, tickformat="~s")
+    fig.update_yaxes(range=[0, tope * 1.12], autorange=False, tickformat=",.0f",
+                     title=dict(text=TITULO_EJE_Y, font=titulo_eje, standoff=10))
+    # Sitio para el título del eje X entre las fechas y la leyenda
+    fig.update_layout(margin=dict(b=42 if compacta else 58))
     fig.update_layout(barmode="overlay" if tipo == "Tallos" else "group", bargap=0.25)
     return fig
