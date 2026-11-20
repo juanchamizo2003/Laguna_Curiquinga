@@ -1,4 +1,5 @@
 import html
+import unicodedata
 from datetime import datetime
 
 import streamlit as st
@@ -10,7 +11,7 @@ from frontend.components.filtro_temporal import (render_filtro_compacto, aplicar
 from frontend.components.visor_laguna import render_visor_laguna, N_CARRUSEL
 from backend import config as cfg
 from backend.data_base import alertas_por_registro
-from frontend.components.graficos_dashboard import fig_area, TIPOS_GRAFICO
+from frontend.components.graficos_dashboard import fig_area, html_interactivo, tema_actual, TIPOS_GRAFICO
 from frontend.components.tooltip_grafica import activar_tooltip
 from frontend.components.ordenar_graficas import nuevo_orden, asa
 from frontend.components.formato import formatear_m2, fecha_legible
@@ -68,13 +69,14 @@ def _frescura(fecha_texto, ahora=None):
     nivel = "" if segundos < plazo * 3600 else ("aviso" if segundos < plazo * 4 * 3600 else "alerta")
     return texto, nivel
 
-def _html_comparacion(actual, promedio):
-    """Etiqueta "▲ 8 %": cuánto se aparta la última captura del promedio del periodo."""
+def _html_comparacion(actual, promedio, historico=False):
+    """Etiqueta "▲ 8 %": cuánto se aparta la última captura del promedio (histórico o del periodo)."""
+    de_que = "histórico" if historico else "del periodo"
     dif = (actual - promedio) / promedio * 100 if promedio else 0
     ayuda = (f"La última captura ({formatear_m2(actual)}) está {abs(dif):.1f} % "
-             f"{'por encima' if dif > 0 else 'por debajo'} del promedio del periodo")
+             f"{'por encima' if dif > 0 else 'por debajo'} del promedio {de_que}")
     if abs(dif) < 0.5:
-        return "<span class='kpi-delta' title='La última captura está en el promedio del periodo'>= prom.</span>"
+        return f"<span class='kpi-delta' title='La última captura está en el promedio {de_que}'>= prom.</span>"
     tono, flecha = ("up", "▲") if dif > 0 else ("down", "▼")
     return f"<span class='kpi-delta {tono}' title='{ayuda}'>{flecha} {abs(dif):.0f} % actual</span>"
 
@@ -140,15 +142,30 @@ def _render_kpis(df_kpi, df_periodo, df_grafica, periodo):
              f"{excluidas} {'excluida' if excluidas == 1 else 'excluidas'}</span>"
              if excluidas else "")
     del_periodo = "en el periodo que muestra la gráfica (cambia con el filtro)"
+    # Promedio: en vivo es el histórico (todas las capturas confiables guardadas hasta ahora, no solo las de la
+    # gráfica); con un filtro, el del periodo elegido
+    if vivo:
+        df_prom = df_kpi
+        pie_prom = (f"<div class='kpi-periodo vivo'>Histórico · {len(df_kpi)} "
+                    f"{'captura' if len(df_kpi) == 1 else 'capturas'}</div>")
+        ayuda_prom = ("Promedio histórico del área: todas las capturas confiables guardadas hasta ahora. "
+                      "La etiqueta compara con él la última captura.")
+    else:
+        df_prom = df_grafica
+        pie_prom = pie
+        ayuda_prom = f"Promedio del área {del_periodo}. La etiqueta compara con él la última captura."
+    hay_prom = not df_prom.empty
     tarjetas = [
         html_kpi(ICONO_AREA, f"Área {ahora}", _html_area(df_kpi),
                  ayuda="Área de la última captura y de la anterior. No depende del filtro."),
         html_kpi(ICONO_FECHA, "Fecha y hora", fecha, pie=pie_hora, ayuda="Cuándo se tomó la última captura."),
         html_kpi(ICONO_COLOR, "Color del agua", color_html, pie=pie_ahora,
                  ayuda="Color medio del agua en la última captura."),
-        html_kpi(ICONO_PROMEDIO, "Promedio", formatear_m2(df_grafica["area"].mean()) if hay else SIN_DATO,
-                 _html_comparacion(ultima["area"], df_grafica["area"].mean()) if hay and ultima is not None else "",
-                 pie=pie, ayuda=f"Promedio del área {del_periodo}. La etiqueta compara con él la última captura."),
+        html_kpi(ICONO_PROMEDIO, "Promedio histórico" if vivo else "Promedio",
+                 formatear_m2(df_prom["area"].mean()) if hay_prom else SIN_DATO,
+                 _html_comparacion(ultima["area"], df_prom["area"].mean(), vivo)
+                 if hay_prom and ultima is not None else "",
+                 pie=pie_prom, ayuda=ayuda_prom),
         html_kpi(ICONO_MAXIMO, "Rango del área<span class='u-etq'> (m²)</span>",
                  _html_rango(df_grafica) if hay else SIN_DATO,
                  pie=pie, ayuda=_ayuda_rango(df_grafica, del_periodo) if hay else ""),
@@ -206,14 +223,55 @@ def _popover_ajustes(pref, modo, con_tipo=True):
         # "Listo" cierra el menú (lo atiende el script de app.py: Streamlit no puede cerrar un popover desde Python)
         st.html('<button class="pop-listo" type="button">Listo</button>')
 
+def _slug(texto):
+    """Sin tildes ni mayúsculas: Streamlit cambia las letras acentuadas de una clave por "-" ("Línea" → "l-nea")
+    y el script de descarga busca la gráfica por su clave."""
+    return unicodedata.normalize("NFD", texto.lower()).encode("ascii", "ignore").decode()
+
+def _titulo_imagen(df, periodo):
+    """Título del JPG descargado, según el filtro: "Últimas 10 imágenes en vivo · 26 abr 2026" (fecha de la más
+    reciente), o las del periodo elegido con las fechas que abarca ("300 imágenes · 2025 · del 2 mar 2025 al ...")."""
+    fechas = sorted(df["fecha_captura"].astype(str))
+    primera, ultima = (fecha_legible(f, con_hora=False) for f in (fechas[0], fechas[-1]))
+    if en_vivo():
+        return f"Últimas {_plural(len(df), 'imagen', 'imágenes')} en vivo · {ultima}"
+    rango = f"día {ultima}" if primera == ultima else f"del {primera} al {ultima}"
+    return f"{_plural(len(df), 'imagen', 'imágenes')} · {periodo} · {rango}"
+
+def _menu_descargar(nombre, clave_grafica, fig, titulo, subtitulo, tipo, titulo_imagen):
+    """Menú para descargar una gráfica:
+    - Imagen (JPG): la gráfica tal como está ajustada en el panel, con el título del periodo, armada por el
+      navegador (script de app.py), sin números sobre los puntos.
+    - Gráfica interactiva (HTML): con los datos de cada punto al pasar el cursor, para cualquier cantidad.
+    nombre va en el nombre del archivo; clave_grafica es la key del st.plotly_chart que se descarga; tipo, el tipo
+    de gráfico (Puntos, Línea…); titulo_imagen, el título que lleva el JPG."""
+    nombre = _slug(nombre)
+    tema = tema_actual()
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    with st.popover("", icon=":material/download:", help="Descargar la gráfica"):
+        st.markdown("**Descargar la gráfica**")
+        st.html(f'<button class="descarga-jpg" type="button" data-grafica="st-key-{clave_grafica}" '
+                f'data-nombre="area_laguna_{nombre}_{hoy}" data-tipo="{html.escape(tipo)}">Imagen (JPG)'
+                # El título va como texto oculto: como atributo data-titulo no llegaba al navegador
+                f'<span class="dl-titulo">{html.escape(titulo_imagen)}</span></button>')
+        st.download_button("Gráfica interactiva (HTML)", data=lambda: html_interactivo(fig, titulo, subtitulo, tema),
+                           file_name=f"area_laguna_{nombre}_{hoy}.html", mime="text/html",
+                           icon=":material/touch_app:", on_click="ignore", width="stretch",
+                           key=f"descargar_html_{nombre}")
+        st.caption("**JPG:** la gráfica tal como la tienes ajustada, con su título. **HTML:** se abre en el "
+                   "navegador y muestra los datos de cada punto al pasar el cursor.")
+
 def _opciones_grafica(pref, modo):
-    """Botones del encabezado de la gráfica: ajustes y ampliar."""
+    """Botones del encabezado de la gráfica: ajustes, descargar y ampliar. Devuelve el hueco del botón de
+    descarga: se llena después, cuando ya existe la gráfica (solo si hay datos que descargar)."""
     _popover_ajustes(pref, modo)
+    hueco_descarga = st.container(width="content")
     # Ampliar se abre fuera del fragmento en vivo (si no, el refresco cada 30 s cerraría la ventana)
     if st.button("", icon=":material/open_in_full:", key="btn_ampliar_grafica",
                  help="Ampliar la gráfica y ver sus datos con los filtros actuales",
                  on_click=st.session_state.__setitem__, args=("grafica_ampliada", True)):
         st.rerun()
+    return hueco_descarga
 
 def _boton_otros_tipos():
     # El botón está dentro del fragmento de la gráfica: cambiar de vista exige recargar toda la página
@@ -321,17 +379,22 @@ def render_vista_graficas(modo, key_prefix, vivo=False):
     for i in range(0, len(orden), 2):
         for col, tipo in zip(st.columns(2, gap="small"), orden[i:i + 2]):
             with col, st.container(key=f"{key_prefix}_gm_{tipo}_card"):
+                fig = fig_area(df_grafica, tipo, pref["colores"], pref["tendencia"], compacta=True,
+                               **_marcas_alerta(pref))
+                clave_grafica = f"{key_prefix}_gm_chart_{_slug(tipo)}"
                 with st.container(horizontal=True, vertical_alignment="center", gap="small", key=f"gm_cab_{tipo}"):
                     st.markdown(f"<div class='card-title'>Área superficial · {tipo}</div>", unsafe_allow_html=True)
+                    if not df_grafica.empty:
+                        _menu_descargar(tipo, clave_grafica, fig, f"Área superficial · {tipo}",
+                                        f"{subtitulo} · {len(df_grafica)} captura(s)", tipo,
+                                        _titulo_imagen(df_grafica, subtitulo))
                     # Pantalla completa de esta gráfica, igual que la principal (se abre fuera del fragmento)
                     if st.button("", icon=":material/open_in_full:", key=f"gm_ampliar_{tipo}",
                                  help=f"Ver «{tipo}» en pantalla completa",
                                  on_click=st.session_state.__setitem__, args=("grafica_ampliada", tipo)):
                         st.rerun()
                     st.markdown(asa(tipo), unsafe_allow_html=True, width="content")
-                st.plotly_chart(fig_area(df_grafica, tipo, pref["colores"], pref["tendencia"], compacta=True,
-                                         **_marcas_alerta(pref)), width="stretch",
-                                height=300, key=f"{key_prefix}_gm_chart_{tipo}", config={"displayModeBar": False})
+                st.plotly_chart(fig, width="stretch", height=300, key=clave_grafica, config={"displayModeBar": False})
 
 def _columna_principal(modo, key_prefix, vivo=False):
     """Gráfica arriba y tarjetas de métricas debajo."""
@@ -346,7 +409,7 @@ def _columna_principal(modo, key_prefix, vivo=False):
         titulo = c_tit.empty()
         with c_opc, st.container(horizontal=True, horizontal_alignment="right", gap="small",
                                  key=f"{key_prefix}_graf_opciones"):
-            _opciones_grafica(pref, modo)
+            hueco_descarga = _opciones_grafica(pref, modo)
         render_filtro_compacto(df_datos, key_prefix=key_prefix)
         _seguir_en_vivo(vivo)
         df_periodo, subtitulo = aplicar_filtro_temporal(df_datos)
@@ -376,6 +439,10 @@ def _columna_principal(modo, key_prefix, vivo=False):
             fig = fig_area(df_grafica, pref["tipo"], pref["colores"], pref["tendencia"], **_marcas_alerta(pref))
             st.plotly_chart(fig, width="stretch", height="stretch", key=f"{key_prefix}_chart_pano",
                             config={"displayModeBar": False})
+            with hueco_descarga:
+                _menu_descargar("principal", f"{key_prefix}_chart_pano", fig, "Área superficial de la laguna",
+                                f"Mediciones confiables · {subtitulo} · {len(df_grafica)} captura(s)", pref["tipo"],
+                                _titulo_imagen(df_grafica, subtitulo))
             _boton_otros_tipos()
 
     # 2. TARJETAS: arriba el estado actual (fijo); abajo las estadísticas del periodo de la gráfica

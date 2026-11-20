@@ -901,7 +901,22 @@ st.html(js_seguro("""
     /* "Más gráficos": título, pantalla completa y asa en la cabecera de cada tarjeta */
     div[class*="st-key-gm_cab_"] { flex-wrap: nowrap !important; }
     div[class*="st-key-gm_cab_"] > [data-testid="stElementContainer"]:first-child { flex: 1 1 auto; min-width: 0; }
-    div[class*="st-key-gm_ampliar_"] button { border-radius: 10px !important; width: 34px; min-height: 34px; padding: 0 !important; }
+    div[class*="st-key-gm_ampliar_"] button, div[class*="st-key-gm_cab_"] [data-testid="stPopoverButton"] { border-radius: 10px !important; width: 34px; min-height: 34px; padding: 0 !important; }
+    div[class*="st-key-gm_cab_"] [data-testid="stPopoverButton"] > div > div:last-child { display: none; }
+    /* Menú "Descargar la gráfica": la opción JPG es un botón propio (lo atiende el script), con el aspecto de los demás */
+    .descarga-jpg {
+        width: 100%; min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
+        border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--text); font: inherit; font-size: 15px;
+    }
+    .descarga-jpg:hover { border-color: var(--accent); color: var(--accent); }
+    .descarga-jpg .dl-titulo { display: none; }
+    /* Icono de imagen con máscara CSS: st.html quita los iconos SVG escritos dentro del botón.
+       (Nunca escribir una etiqueta entre ángulos en este bloque: DOMPurify borraría todo el estilo) */
+    .descarga-jpg::before {
+        content: ""; width: 18px; height: 18px; background: currentColor;
+        -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='9' cy='9' r='2'/%3E%3Cpath d='m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21'/%3E%3C/svg%3E") center / contain no-repeat;
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='9' cy='9' r='2'/%3E%3Cpath d='m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
 
     /* Un st.html que solo trae estilos o un script no debe ocupar sitio en la página */
     [data-testid="stElementContainer"]:has(> [data-testid="stHtml"] > script:only-child),
@@ -1396,6 +1411,75 @@ st.html(js_seguro("""
   new MutationObserver(() => document.querySelectorAll(FOTOS_LUPA).forEach(prepararLupa))
     .observe(document.body, { childList: true, subtree: true });
   document.querySelectorAll(FOTOS_LUPA).forEach(prepararLupa);
+
+  // Descargar una gráfica como JPG (opción "Imagen (JPG)" del menú de descarga de cada gráfica).
+  // La imagen es la gráfica tal como está ajustada en el panel (tipo, colores, curva, tendencia, alertas, ejes y
+  // leyenda: se copian las capas SVG de Plotly), con el título del periodo encima (armado en Python, p. ej.
+  // "Últimas 10 imágenes en vivo · 26 abr 2026"). Sin números sobre los puntos: con muchas capturas no se leerían.
+  // El clic no llega a Streamlit: la página no se recarga.
+  const FUENTE = "Inter, 'Segoe UI', sans-serif";
+  const svgComoImagen = (svg) => new Promise((ok, mal) => {
+    const copia = svg.cloneNode(true);
+    const caja = svg.getBoundingClientRect();
+    copia.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    copia.setAttribute("width", caja.width);
+    copia.setAttribute("height", caja.height);
+    const img = new Image();
+    img.onload = () => ok(img);
+    img.onerror = mal;
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(copia));
+  });
+  const descargarGrafica = async (boton) => {
+    const gd = document.querySelector("." + boton.dataset.grafica)?.querySelector(".js-plotly-plot");
+    if (!gd) return;
+    const estilo = getComputedStyle(document.documentElement);
+    const v = (nombre, def) => estilo.getPropertyValue(nombre).trim() || def;
+    const c = { fondo: v("--surface", "#12171e"), texto: v("--text", "#e8edf2") };
+    const titulo = boton.querySelector(".dl-titulo")?.textContent.trim() || "Área superficial de la laguna";
+
+    const marco = gd.getBoundingClientRect();
+    const margen = 28, cabecera = 64, escala = 2;
+    const ancho = marco.width + margen * 2, alto = cabecera + marco.height + margen;
+    const lienzo = document.createElement("canvas");
+    lienzo.width = Math.round(ancho * escala);
+    lienzo.height = Math.round(alto * escala);
+    const ctx = lienzo.getContext("2d");
+    ctx.fillStyle = c.fondo;
+    ctx.fillRect(0, 0, lienzo.width, lienzo.height);
+    ctx.scale(escala, escala);
+    ctx.textBaseline = "top";
+    ctx.fillStyle = c.texto;
+    ctx.font = `700 20px ${FUENTE}`;
+    ctx.fillText(titulo, margen, 24);
+    try {
+      for (const capa of gd.querySelectorAll("svg.main-svg")) {
+        const caja = capa.getBoundingClientRect();
+        ctx.drawImage(await svgComoImagen(capa), margen + caja.left - marco.left, cabecera + caja.top - marco.top,
+                      caja.width, caja.height);
+      }
+    } catch (err) {
+      console.warn("[Monitoreo Laguna] No se pudo copiar la gráfica", err);
+      return;
+    }
+    lienzo.toBlob((blob) => {
+      const enlace = document.createElement("a");
+      enlace.href = URL.createObjectURL(blob);
+      enlace.download = (boton.dataset.nombre || "area_laguna") + ".jpg";
+      document.body.appendChild(enlace);
+      enlace.click();
+      enlace.remove();
+      setTimeout(() => URL.revokeObjectURL(enlace.href), 1000);
+    }, "image/jpeg", 0.95);
+  };
+  document.addEventListener("click", (e) => {
+    const boton = e.target.closest?.(".descarga-jpg");
+    if (!boton) return;
+    e.preventDefault();
+    e.stopPropagation();
+    descargarGrafica(boton);
+    // Cierra el menú de descarga, como el botón "Listo" de los demás menús
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true }));
+  }, true);
 
   // Botón "Listo" de los menús emergentes: los cierra como lo haría la tecla Esc
   document.addEventListener("click", (e) => {
